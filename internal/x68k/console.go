@@ -12,18 +12,18 @@ import "fmt"
 // 模式表來源：Data Crystal 的 Human68k DOSCALL 手冊整理
 // （https://datacrystal.tcrf.net/wiki/X68k/DOSCALL）——平台公開規格。
 type Console struct {
-	Out       []byte // 主控台輸出（診斷用）
-	Attr      uint16
-	CursorX   uint16
-	CursorY   uint16
-	FnKeyMode uint16 // _CONCTRL 模式 14
-	ScreenMod uint16 // _CONCTRL 模式 16
-	ScrollTop uint16 // _CONCTRL 模式 15
-	ScrollLen uint16
+	Out        []byte // 主控台輸出（診斷用）
+	Attr       uint16
+	CursorX    uint16
+	CursorY    uint16
+	FnKeyMode  uint16 // _CONCTRL 模式 14
+	ScreenMod  uint16 // _CONCTRL 模式 16
+	ScrollTop  uint16 // _CONCTRL 模式 15
+	ScrollLen  uint16
 	CursorOn   bool
 	RangeStart uint32 // _B_CONSOL
 	RangeSize  uint32
-	Clears    int // 清畫面的次數
+	Clears     int // 清畫面的次數
 }
 
 func (c *Console) putc(b byte) { c.Out = append(c.Out, b) }

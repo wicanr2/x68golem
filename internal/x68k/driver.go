@@ -20,9 +20,9 @@ import (
 
 // LoadedDriver 是一支已經載好的驅動。
 type LoadedDriver struct {
-	Base  uint32
-	Entry uint32
-	Size  uint32
+	Base   uint32
+	Entry  uint32
+	Size   uint32
 	Relocs int
 }
 

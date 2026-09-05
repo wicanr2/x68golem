@@ -78,8 +78,8 @@ func (r *RNG) Next() (uint32, error) {
 		v = r.Seq[r.Pos]
 		r.Pos++
 	default:
-		return 0, fmt.Errorf("rand() 被呼叫了，但還沒指定亂數來源。"+
-			"FLOAT2.X 的 rand() 演算法還沒解出來，所以沒有直通模式——"+
+		return 0, fmt.Errorf("rand() 被呼叫了，但還沒指定亂數來源。" +
+			"FLOAT2.X 的 rand() 演算法還沒解出來，所以沒有直通模式——" +
 			"用 Fixed／Seq／Replay 指定一個受控的來源")
 	}
 	r.Log = append(r.Log, v)

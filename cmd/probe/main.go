@@ -136,9 +136,9 @@ func dumpWords(im *human68k.Image, addr uint32, n int) {
 
 func main() {
 	var (
-		zPath    = flag.String("z", "", "Human68k `.Z` 執行檔（玩家自備）")
-		maxSteps = flag.Uint64("steps", 50_000_000, "最多執行幾道指令")
-		ram      = flag.Int("ram", x68k.DefaultRAMSize, "主記憶體大小（bytes）")
+		zPath     = flag.String("z", "", "Human68k `.Z` 執行檔（玩家自備）")
+		maxSteps  = flag.Uint64("steps", 50_000_000, "最多執行幾道指令")
+		ram       = flag.Int("ram", x68k.DefaultRAMSize, "主記憶體大小（bytes）")
 		randFixed = flag.Int("rand-fixed", -1,
 			"把 rand() 固定成這個值。不指定就 fail-closed——"+
 				"FLOAT2.X 的 rand() 演算法還沒解出來，沒有直通模式")
@@ -154,7 +154,7 @@ func main() {
 			"先跑這些 `.X` 驅動（逗號分隔），再載入主程式。"+
 				"《三國志》的 CONFIG.SYS 載了 \\SYS\\FLOAT2.X 與 \\SYS\\OPMDRV.X")
 		driverBase = flag.Uint64("driver-base", 0x20000, "第一支驅動載到哪個位址")
-		cgrom = flag.String("cgrom", "",
+		cgrom      = flag.String("cgrom", "",
 			"CGROM 檔（字模，玩家自備；不掛的話字是空白的）")
 		keyDelay = flag.Uint64("key-delay", 20_000_000,
 			"兩個按鍵之間至少隔幾個 CPU 週期（10 MHz ⇒ 兩百萬＝0.2 秒）。"+
@@ -163,8 +163,8 @@ func main() {
 			"預先排進鍵盤佇列的字元（\\n 與 \\r 都代表 Return＝CR 0x0D）")
 		watch = flag.String("watch", "",
 			"監看這些主記憶體位址的寫入（十六進位，逗號分隔），印出 PC 與值")
-		watchMax = flag.Int("watch-max", 40, "最多印幾筆監看紀錄")
-		hot = flag.Int("hot", 0, "印出執行次數最多的 N 個位址（回答「它卡在哪」）")
+		watchMax  = flag.Int("watch-max", 40, "最多印幾筆監看紀錄")
+		hot       = flag.Int("hot", 0, "印出執行次數最多的 N 個位址（回答「它卡在哪」）")
 		dumpTVRAM = flag.String("dump-tvram", "",
 			"停下來時把 text VRAM 平面 0（0xE00000 起 128 KB）寫成檔案，"+
 				"給與 MAME 逐位元組比對用")
@@ -172,8 +172,8 @@ func main() {
 			"停下來時把文字平面存成 PNG")
 		shotG = flag.String("shot-graphics", "",
 			"停下來時把圖形平面（第 0 頁）存成 PNG。版面還沒對過 MAME，見 screen.go")
-		shotW = flag.Int("shot-width", 512, "截圖寬度")
-		shotH = flag.Int("shot-height", 512, "截圖高度")
+		shotW  = flag.Int("shot-width", 512, "截圖寬度")
+		shotH  = flag.Int("shot-height", 512, "截圖高度")
 		logSvc = flag.Int("log-services", 0,
 			"把最後 N 次服務呼叫連同 SR／堆疊指標印出來")
 		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
@@ -183,7 +183,7 @@ func main() {
 		stopIO = flag.String("stop-io", "",
 			"碰到這些 I/O 位址就停（十六進位，逗號分隔）。停下來時軌跡還在，"+
 				"用來回答「它是怎麼走到這個暫存器的」")
-		stub  = flag.String("stub", "",
+		stub = flag.String("stub", "",
 			"指名要「回 0 混過去」的服務，例如 dos:44,iocs:0E。"+
 				"這是探路用的：想看某個服務之後的程式碼長什麼樣，但又不想像 "+
 				"-lenient 那樣把整份報告變成不可信")
@@ -520,12 +520,12 @@ func main() {
 	// 依區塊彙總。逐位址列出來對暫存器有用（就那幾個），對 VRAM 沒有用
 	// ——清一次畫面就是六萬多筆，把真正該看的東西淹掉。
 	type agg struct {
-		region   x68k.Region
-		reads    int
-		writes   int
-		addrs    map[uint32]bool
-		firstPC  uint32
-		lo, hi   uint32
+		region  x68k.Region
+		reads   int
+		writes  int
+		addrs   map[uint32]bool
+		firstPC uint32
+		lo, hi  uint32
 	}
 	var regions []*agg
 	byRegion := map[x68k.Region]*agg{}

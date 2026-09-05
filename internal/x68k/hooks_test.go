@@ -16,8 +16,8 @@ func TestInterceptReplacesFunction(t *testing.T) {
 	words := []uint16{
 		0x4879, 0x0000, 0x1234, // pea ($1234).l
 		0x4EB9, 0x0000, target, // jsr target
-		0x588F,                 // addq.l #4,sp
-		0x60FE,                 // bra.s *  ← 原地停住，否則會滑進填充的 nop 再撞到 target
+		0x588F, // addq.l #4,sp
+		0x60FE, // bra.s *  ← 原地停住，否則會滑進填充的 nop 再撞到 target
 	}
 	// 補到 target 的位置
 	for len(words) < (target-base)/2 {
@@ -25,7 +25,7 @@ func TestInterceptReplacesFunction(t *testing.T) {
 	}
 	words = append(words,
 		0x203C, 0x0000, 0xDEAD, // move.l #$0000DEAD,d0
-		0x4E75,                 // rts
+		0x4E75, // rts
 	)
 	im, err := human68k.ParseZ(buildZ(base, words...))
 	if err != nil {

@@ -248,6 +248,7 @@ func (o *Oracle) Restore(s *x68k.Snapshot) { o.m.Restore(s) }
 //   - 不用「畫面雜湊有沒有變」——那要每隔幾步雜湊 128 KB，
 //     而且取樣之間的變化看不到。
 //   - 不用固定延遲——那是在猜對方要多久。
+//
 // ResetScreenChanges 把「畫面變動」的計數歸零。
 //
 // **要在送出按鍵之前呼叫**，不是在 WaitSettled 裡面：按鍵送出去之後
