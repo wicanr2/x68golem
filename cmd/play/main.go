@@ -40,6 +40,9 @@ func main() {
 			"要等到累計有這麼多個 text VRAM 位址真的變過，才開始判斷「畫完了」。"+
 				"少了這一關會在畫面清空、還沒畫下一頁的空檔誤判")
 		randVal = flag.Uint64("rand-fixed", 12345, "把 rand() 固定成這個值")
+		memEnd  = flag.Uint64("mem-end", 0,
+			"Human68k 交給程式的記憶體結束位址（管理標頭 +0x08）。"+
+				"真機上量到的是 0xFCA86；0 表示用主記憶體大小推")
 	)
 	verbose := flag.Bool("verbose", false, "每個觀察窗印出變動了幾個位址")
 	busyOK := flag.Bool("busy-ok", false,
@@ -67,7 +70,7 @@ func main() {
 	fixed := uint32(*randVal)
 	cfg := oracle.Config{
 		Exe: *z, CGROM: *cgrom, LatchIO: true,
-		Rand: oracle.RandSource{Fixed: &fixed},
+		Rand: oracle.RandSource{Fixed: &fixed}, MemEnd: uint32(*memEnd),
 	}
 	if *passthru {
 		cfg.Rand = oracle.RandSource{}

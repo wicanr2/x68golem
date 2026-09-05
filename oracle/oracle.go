@@ -36,6 +36,10 @@ type Config struct {
 	DriverBase uint32
 	// RAMSize 預設 2 MB。
 	RAMSize int
+	// MemEnd 是 Human68k 交給程式的那一塊記憶體的結束位址
+	//（管理標頭 +0x08）。0 表示用主記憶體大小推。真機量到的值見
+	// `docs/findings/018`。
+	MemEnd uint32
 
 	// Rand 決定亂數怎麼給。**沒有直通模式**：`FLOAT2.X` 的 `rand()` 演算法
 	// 還沒解出來，任何「大概對」的亂數都會產生自洽但錯的對拍結論
@@ -74,7 +78,7 @@ func Load(cfg Config) (*Oracle, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := x68k.NewMachine(im, cfg.RAMSize, filepath.Base(cfg.Exe))
+	m, err := x68k.NewMachineWithMemEnd(im, cfg.RAMSize, filepath.Base(cfg.Exe), cfg.MemEnd)
 	if err != nil {
 		return nil, err
 	}

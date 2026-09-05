@@ -62,6 +62,7 @@ func (m *Machine) RunDriver(d *LoadedDriver, maxSteps int) error {
 	}
 	proc := &human68k.Process{
 		BlockAddr:  d.Base - human68k.ProcessBlockSize,
+		DataEnd:    d.Base + d.Size,
 		ProgramEnd: d.Base + d.Size,
 		BlockEnd:   d.Base + d.Size + 0x1000,
 		Path:       "A:\\SYS\\",

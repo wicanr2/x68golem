@@ -37,13 +37,17 @@ const (
 	pbNext   = 0x0C // 下一個記憶體管理指標
 
 	// 程式管理區塊（A0 起算）
-	// ⚠ **這兩個欄位是目前最可疑的未知數**（`docs/findings/017`）。
-	// crt0 讀它們、搬到別處存起來，而**堆積的邊界很可能就是從那裡算的**。
-	// 我們兩個都填「區塊結束位址」，而實測顯示我們的堆疊比真機低
-	// 168 bytes、載入的資料因此整批位移，畫地圖的迴圈於是讀到界外的 0。
-	// 要定它得知道真機在這兩個欄位裡放什麼。
-	pbField30 = 0x30 // L3：意義未知
-	pbField34 = 0x34 // L3：意義未知
+	// +0x30／+0x34／+0x38 是**量出來的**（`docs/findings/018`）：
+	// 在 MAME 上把真機的管理區塊整塊印出來，對照 `docs/re/01` 的段界，
+	//
+	//	+0x30 = +0x34 = 0x0008A9B6 ＝ **data 段結束（bss 起點）**
+	//	+0x38 =         0x0008B874 ＝ **bss 結束**
+	//
+	// 先前這兩個欄位標 L3、兩個都填了「區塊結束位址」，堆積因此整批位移
+	// 168 bytes，畫地圖的迴圈讀到界外的 0（`docs/findings/017`）。
+	pbDataEnd = 0x30 // data 段結束（＝ bss 起點）
+	pbDataEnd2 = 0x34 // 同上，crt0 兩個都讀
+	pbBSSEnd  = 0x38 // bss 結束
 	pbPath    = 0x80 // 執行檔路徑（null 結尾）
 	pbName    = 0xC4 // 執行檔檔名（null 結尾）
 )
@@ -51,6 +55,8 @@ const (
 // Process 描述要交給程式的那一組東西。
 type Process struct {
 	BlockAddr uint32 // ＝ A0，等於載入基底 − ProcessBlockSize
+	// DataEnd 是 data 段的結束（＝ bss 起點），放進管理區塊的 +0x30／+0x34。
+	DataEnd uint32
 	// ProgramEnd ＝ A1：**程式映像的結束**（bss 之後），不是記憶體的結束。
 	//
 	// 這一點是量出來的：crt0 以 A1 為起點，逐段加上對齊過的堆積、堆疊與
@@ -83,8 +89,9 @@ func (p *Process) Layout(ram []byte) (a0, a1, a2, a3 uint32) {
 	put32(pbParent, 0)
 	put32(pbEnd, p.BlockEnd)
 	put32(pbNext, 0)
-	put32(pbField30, p.BlockEnd)
-	put32(pbField34, p.BlockEnd)
+	put32(pbDataEnd, p.DataEnd)
+	put32(pbDataEnd2, p.DataEnd)
+	put32(pbBSSEnd, p.ProgramEnd)
 	putStr(pbPath, p.Path)
 	putStr(pbName, p.Name)
 

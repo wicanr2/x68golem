@@ -88,6 +88,9 @@ type Machine struct {
 	// CRTMode 是 _CRTMOD 設的畫面模式；ScreenUse 是 _TGUSEMD 登記的使用狀態。
 	CRTMode   uint16
 	TVControl []uint32
+	// MemEnd 是交給程式的那一塊記憶體的結束位址（管理標頭 +0x08）。
+	MemEnd uint32
+
 	// VPage 是 _VPAGE 設的圖形顯示頁；PaintPixels 是 _PAINT 塗過幾個像素。
 	VPage       byte
 	PaintPixels int
@@ -155,6 +158,11 @@ type TracePoint struct {
 // **這一層不知道跑的是哪一支程式**，所以名字由呼叫端給——
 // 機器層出現特定遊戲的字串就是分層破了（`docs/spec/006`）。
 func NewMachine(im *human68k.Image, ramSize int, name string) (*Machine, error) {
+	return NewMachineWithMemEnd(im, ramSize, name, 0)
+}
+
+// NewMachineWithMemEnd 另外指定 Human68k 交給程式的記憶體結束位址。
+func NewMachineWithMemEnd(im *human68k.Image, ramSize int, name string, memEnd uint32) (*Machine, error) {
 	if ramSize <= 0 {
 		ramSize = DefaultRAMSize
 	}
@@ -171,6 +179,15 @@ func NewMachine(im *human68k.Image, ramSize int, name string) (*Machine, error) 
 		DOSCalls:  map[uint16]func(*Machine) error{},
 		IOCSCalls: map[uint16]func(*Machine) error{},
 		services:  map[string]*Service{},
+	}
+	// MemEnd 是 Human68k 交給程式的那一塊記憶體的結束位址（管理標頭 +0x08）。
+	//
+	// **這不是「主記憶體大小」**：Human68k 自己、驅動與緩衝區佔掉一部分，
+	// 剩下的才給程式。真機上量到的是 0x000FCA86（`docs/findings/018`）。
+	// 預設用主記憶體減掉 supervisor 堆疊，呼叫端可以覆寫成量到的值。
+	m.MemEnd = uint32(ramSize) - supervisorStack
+	if memEnd > 0 {
+		m.MemEnd = memEnd
 	}
 	m.installVectors()
 	m.initDMAC()
@@ -193,8 +210,9 @@ func NewMachine(im *human68k.Image, ramSize int, name string) (*Machine, error) 
 	}
 	proc := &human68k.Process{
 		BlockAddr:  im.Base - human68k.ProcessBlockSize,
+		DataEnd:    im.DataEnd(),
 		ProgramEnd: im.BSSEnd(),
-		BlockEnd:   uint32(ramSize) - supervisorStack,
+		BlockEnd:   m.MemEnd,
 		Path:       "A:\\",
 		Name:       name,
 	}

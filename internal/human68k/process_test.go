@@ -12,6 +12,7 @@ func TestProcessLayout(t *testing.T) {
 	base := uint32(0x4FFFA)
 	p := &Process{
 		BlockAddr:  base - ProcessBlockSize,
+		DataEnd:    0x8A9B6,
 		ProgramEnd: 0x8B874,
 		BlockEnd:   0x1FFC00,
 		Path:       "A:\\",
