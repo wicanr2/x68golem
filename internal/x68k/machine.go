@@ -114,6 +114,8 @@ type Machine struct {
 	dmacDoneAt    uint64
 	dmacVector    byte
 	DMACTransfers int
+	DMACBytes     int
+	dmacErr       error
 
 	// 函式攔截（hooks.go）。
 	hooks      map[uint32]func(*Frame)

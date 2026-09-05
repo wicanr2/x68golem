@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wicanr2/x68golem/internal/x68k"
 	"github.com/wicanr2/x68golem/oracle"
 )
 
@@ -45,6 +46,8 @@ func main() {
 		"畫面一直在動也照樣送鍵。**動畫畫面需要它**——能力值抽取那一頁的數字"+
 			"會一直跳（原版就是這樣），永遠不會「靜下來」")
 	watch := flag.String("watch", "", "監看這些位址的寫入（十六進位，逗號分隔）")
+	hook := flag.String("hook", "", "在這些位址印出暫存器（十六進位，逗號分隔）")
+	hookMax := flag.Int("hook-max", 6, "每個攔截點最多印幾次")
 	flag.Parse()
 	if *verbose {
 		oracle.ScreenWindowLog = func(w, n int) {
@@ -103,6 +106,27 @@ func main() {
 			}
 		}
 	}
+	if *hook != "" {
+		for _, item := range strings.Split(*hook, ",") {
+			v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(item), "0x"), 16, 32)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "-hook %q 不是十六進位位址\n", item)
+				os.Exit(2)
+			}
+			addr := uint32(v)
+			n := 0
+			o.OnCall(addr, func(f *x68k.Frame) {
+				if n >= *hookMax {
+					return
+				}
+				n++
+				st := f.Machine().CPU.State
+				fmt.Printf("    攔截 0x%06X：D0=0x%08X D1=0x%08X D3=0x%08X A0=0x%08X A1=0x%08X A2=0x%08X\n",
+					addr, st.D[0], st.D[1], st.D[3], st.A[0], st.A[1], st.A[2])
+			})
+		}
+	}
+
 	keys := strings.NewReplacer(`\r`, "\r", `\n`, "\r", `\t`, "\t").Replace(*seq)
 
 	for i, r := range []byte(keys) {
@@ -143,6 +167,21 @@ func main() {
 		}
 	}
 	fmt.Printf("graphics VRAM 非 0 bytes：%d／%d\n", nz, len(g))
+	reads, opens := 0, 0
+	for _, l := range o.Machine().Opens {
+		if strings.HasPrefix(l, "  讀 ") {
+			reads++
+		} else {
+			opens++
+		}
+	}
+	fmt.Printf("檔案：開 %d 次、讀 %d 次；DMA 傳送 %d 次、搬了 %d bytes\n",
+		opens, reads, o.Machine().DMACTransfers, o.Machine().DMACBytes)
+	for _, l := range o.Machine().Opens {
+		if strings.HasPrefix(l, "  讀 ") {
+			fmt.Println(l)
+		}
+	}
 	fmt.Printf("跑完 %d 鍵，共 %d 道指令、%d 個週期\n", len(keys), o.Steps(), o.Cycles())
 }
 

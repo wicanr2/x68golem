@@ -23,8 +23,12 @@ const (
 
 	dmacCSR = 0x00 // 狀態
 	dmacCER = 0x01 // 錯誤
+	dmacOCR = 0x05 // 操作控制（bit7 方向、bits 5-4 單位大小）
+	dmacSCR = 0x06 // 序列控制（bits 1-0 記憶體位址增減、bits 3-2 裝置位址增減）
 	dmacCCR = 0x07 // 控制（bit7 = 開始）
 	dmacMTC = 0x0A // 記憶體傳送計數
+	dmacMAR = 0x0C // 記憶體位址
+	dmacDAR = 0x14 // 裝置位址
 	dmacNIV = 0x25 // 正常中斷向量編號
 
 	dmacCSRComplete = 0x80 // COC：通道操作完成
@@ -82,8 +86,11 @@ func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
 	if reg != dmacCCR || v&0x80 == 0 {
 		return 0, false
 	}
-	// 開始位元被設起來：排定完成時間。
+	// 開始位元被設起來：**先把資料搬完**，再排定完成時間。
 	count := uint64(m.Bus.latch[base+dmacMTC])<<8 | uint64(m.Bus.latch[base+dmacMTC+1])
+	if err := m.dmacTransfer(base, count); err != nil {
+		m.dmacErr = err
+	}
 	if count == 0 {
 		count = 1
 	}
@@ -94,6 +101,65 @@ func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
 	m.Bus.latch[base+dmacCSR] |= dmacCSRComplete
 	m.DMACTransfers++
 	return m.Bus.latch[base+dmacNIV], true
+}
+
+// dmacTransfer 真的把資料搬過去。
+//
+// **第一版沒有搬**，理由是「通道 3 是 ADPCM，我們沒有音源」。那個理由對
+// 通道 3 成立，對別的通道不成立——遊戲用 DMAC 把地圖圖形送進 VRAM，
+// 不搬的話畫面就是空的（`docs/findings/017`）。
+//
+// HD63450 的方向與單位由 OCR 決定：bit7 = 0 是記憶體 → 裝置，
+// bits 5-4 是單位（00 byte、01 word、10 long）。位址增減由 SCR 決定
+// （bits 1-0 記憶體、bits 3-2 裝置；01 = 遞增、10 = 遞減、00 = 不動）。
+func (m *Machine) dmacTransfer(base uint32, count uint64) error {
+	get32 := func(off uint32) uint32 {
+		return uint32(m.Bus.latch[base+off])<<24 | uint32(m.Bus.latch[base+off+1])<<16 |
+			uint32(m.Bus.latch[base+off+2])<<8 | uint32(m.Bus.latch[base+off+3])
+	}
+	ocr := m.Bus.latch[base+dmacOCR]
+	scr := m.Bus.latch[base+dmacSCR]
+	mar, dar := get32(dmacMAR), get32(dmacDAR)
+	if mar == 0 || dar == 0 || count == 0 {
+		return nil
+	}
+	unit := uint32(1)
+	switch ocr >> 4 & 3 {
+	case 1:
+		unit = 2
+	case 2:
+		unit = 4
+	}
+	step := func(bits byte) int32 {
+		switch bits {
+		case 1:
+			return int32(unit)
+		case 2:
+			return -int32(unit)
+		}
+		return 0
+	}
+	mStep, dStep := step(scr&3), step(scr>>2&3)
+	toDevice := ocr&0x80 == 0
+	for i := uint64(0); i < count; i++ {
+		src, dst := mar, dar
+		if !toDevice {
+			src, dst = dar, mar
+		}
+		for b := uint32(0); b < unit; b++ {
+			v, err := m.Bus.ReadByte(src+b, 5)
+			if err != nil {
+				return err
+			}
+			if err := m.Bus.WriteByte(dst+b, v, 5); err != nil {
+				return err
+			}
+		}
+		mar = uint32(int32(mar) + mStep)
+		dar = uint32(int32(dar) + dStep)
+		m.DMACBytes += int(unit)
+	}
+	return nil
 }
 
 // serviceDMAC 在 DMAC 宣告完成之後，透過遊戲自己裝的向量發一次中斷。
