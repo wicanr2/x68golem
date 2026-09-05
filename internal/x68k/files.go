@@ -38,6 +38,11 @@ func (m *Machine) InstallFiles() {
 
 // readString 從記憶體讀一個 null 結尾字串。
 func (m *Machine) readString(addr uint32, max int) (string, error) {
+	return m.ReadCString(addr, max)
+}
+
+// ReadCString 讀一個 null 結尾字串，最多 max bytes。
+func (m *Machine) ReadCString(addr uint32, max int) (string, error) {
 	var b []byte
 	for i := 0; i < max; i++ {
 		c, err := m.Bus.ReadByte(addr+uint32(i), 5)

@@ -11,6 +11,7 @@ package sangokushi
 import (
 	"github.com/wicanr2/x68golem/internal/x68k"
 	"github.com/wicanr2/x68golem/oracle"
+	"github.com/wicanr2/x68golem/runtime/xc"
 )
 
 // 位址常數。`.Z` 是固定位址的平坦映像，所以 IDA 的位址就是執行期位址
@@ -31,7 +32,7 @@ const (
 // 這裡看到的是「要一個 0..n−1 的數」——**對照公式時要的是後者**。
 func OnRand(o *oracle.Oracle, fn func(n uint32)) {
 	o.OnCall(Rand, func(f *x68k.Frame) {
-		n, err := f.ArgLong(0)
+		n, err := xc.Long(f, 0)
 		if err != nil {
 			return
 		}
@@ -46,7 +47,7 @@ func OnRand(o *oracle.Oracle, fn func(n uint32)) {
 // 要對照 `docs/mechanics` 裡寫成 `rand(n)` 的公式時，用這個比較直接。
 func ForceRand(o *oracle.Oracle, fn func(n uint32) uint32) {
 	o.Intercept(Rand, func(f *x68k.Frame) (uint32, bool) {
-		n, err := f.ArgLong(0)
+		n, err := xc.Long(f, 0)
 		if err != nil {
 			return 0, false
 		}

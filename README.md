@@ -63,7 +63,7 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 | M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **文字面完成**（131,072 bytes 與 MAME 相同，`docs/findings/009`）；圖形面未驗 |
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | 未開始 |
 | M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **介面完成**（`oracle` 套件：`Load`／`Run`／`RunUntil`／`Keys`／`Byte`–`Long`／`TextPlane`／`OnCall`／`Intercept`／`Snapshot`／`Restore`）；還沒拿去重跑戰場對照 |
-| M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | **機器層已無遊戲專屬字串**（執行檔名改由呼叫端給）；`apps/sangokushi` 已建立；`runtime/xc` 未開始 |
+| M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | **完成**：四層都在（`internal/*` 機器、`oracle/` 觀測、`runtime/xc/` C 呼叫慣例、`apps/sangokushi/` 遊戲專屬）；機器層沒有任何遊戲專屬字串 |
 
 ## 用法
 
