@@ -109,6 +109,15 @@ func main() {
 			}
 		}
 	}
+	{
+		pb := o.Machine().Process.BlockAddr
+		v, _ := o.Long(pb + 0x08)
+		d30, _ := o.Long(pb + 0x30)
+		d38, _ := o.Long(pb + 0x38)
+		fmt.Printf("管理區塊 0x%06X：+08=0x%08X +30=0x%08X +38=0x%08X（MemEnd=0x%X）\n",
+			pb, v, d30, d38, o.Machine().MemEnd)
+	}
+
 	if *hook != "" {
 		for _, item := range strings.Split(*hook, ",") {
 			v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(item), "0x"), 16, 32)
