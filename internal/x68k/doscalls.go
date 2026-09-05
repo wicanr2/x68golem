@@ -54,6 +54,8 @@ func (m *Machine) SetResult(v uint32) { m.CPU.State.D[0] = v }
 // InstallDOSCalls 登記目前實作好的 DOS call。
 func (m *Machine) InstallDOSCalls() {
 	m.DOSCalls[0x25] = dosIntvcs
+	m.DOSCalls[0x21] = dosFnckey
+	m.DOSCalls[0x44] = dosIoctrl
 	m.DOSCalls[0x4A] = dosSetblock
 }
 
@@ -87,6 +89,75 @@ func dosIntvcs(m *Machine) error {
 	old := m.Vectors[num]
 	m.Vectors[num] = addr
 	m.SetResult(old)
+	return nil
+}
+
+// dosFnckey 是 `$FF21 _FNCKEY(模式.w, 緩衝區.l)`：讀寫功能鍵的定義字串。
+//
+//	0x06E94C  pea    ($8B1A0).l    ← 先推 long 緩衝區
+//	0x06E952  move.w #0,-(sp)      ← 再推 word 模式
+//	0x06E956  $FF21
+//	0x06E958  addq.l #6,sp
+//
+// 模式 0 是「把整份定義讀出來」。我們沒有功能鍵定義，所以把緩衝區清成 0
+// ——**這不是敷衍**：一台剛開機、沒有人設過功能鍵的機器，讀出來就是空的。
+// 設定（模式 ≥ 1）我們收下但不留，因為沒有東西會去顯示功能鍵列。
+//
+// L3：整份定義的長度。Human68k 的表是固定大小，我們清 712 bytes；
+// 程式若只讀前面幾筆就不會發現差別。
+func dosFnckey(m *Machine) error {
+	mode, err := m.ArgWord(0)
+	if err != nil {
+		return err
+	}
+	buf, err := m.ArgLongAt(2)
+	if err != nil {
+		return err
+	}
+	if mode == 0 {
+		const fnckeyTableSize = 712
+		for i := uint32(0); i < fnckeyTableSize; i++ {
+			if err := m.Bus.WriteByte(buf+i, 0, 5); err != nil {
+				return err
+			}
+		}
+	}
+	m.SetResult(0)
+	return nil
+}
+
+// dosIoctrl 是 `$FF44 _IOCTRL`：對裝置驅動程式直接下指令。
+//
+// crt0 只用模式 0（取得裝置資訊）：
+//
+//	0x06E858  clr.l  d1
+//	0x06E85A  move.l d1,-(sp)      ← 高字＝模式 0，低字＝檔案代號
+//	0x06E85E  $FF44
+//	0x06E860  addq.l #4,sp         ← 收 4 bytes ＝ word 模式 + word 代號
+//
+// 推 4 bytes、收 4 bytes，配上 `_IOCTRL(模式.w, 檔案代號.w)` 的形狀
+// （Data Crystal 的 DOSCALL 手冊）——所以模式在 SP+0，代號在 SP+2。
+//
+// L3：**回傳的裝置屬性值**。我們對代號 0–4 回「字元裝置」（bit 7），
+// 其餘回 0（磁碟檔）。真機上還有更多位元（重新導向、CON/NUL 等），
+// 這個遊戲用不用得到還不知道。
+func dosIoctrl(m *Machine) error {
+	mode, err := m.ArgWord(0)
+	if err != nil {
+		return err
+	}
+	fileno, err := m.ArgWord(2)
+	if err != nil {
+		return err
+	}
+	if mode != 0 {
+		return fmt.Errorf("_IOCTRL：模式 %d 還沒實作（檔案代號 %d）", mode, fileno)
+	}
+	if fileno <= 4 {
+		m.SetResult(0x80)
+	} else {
+		m.SetResult(0)
+	}
 	return nil
 }
 

@@ -60,6 +60,8 @@ func main() {
 		zPath    = flag.String("z", "", "Human68k `.Z` 執行檔（玩家自備）")
 		maxSteps = flag.Uint64("steps", 50_000_000, "最多執行幾道指令")
 		ram      = flag.Int("ram", x68k.DefaultRAMSize, "主記憶體大小（bytes）")
+		disks = flag.String("disks", "",
+			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
 		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
 		latch = flag.Bool("latch-io", false,
 			"把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。"+
@@ -100,6 +102,21 @@ func main() {
 		os.Exit(1)
 	}
 	m.InstallDOSCalls()
+	m.InstallIOCS()
+	m.InstallConsole()
+	m.InstallFDD()
+	m.InstallFiles()
+	if *disks != "" {
+		for _, p := range strings.Split(*disks, ",") {
+			d, err := x68k.LoadDIM(strings.TrimSpace(p))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			m.Drives = append(m.Drives, d)
+		}
+		fmt.Printf("軟碟機：%d 台\n\n", len(m.Drives))
+	}
 	if err := installStubs(m, *stub); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -155,6 +172,13 @@ func main() {
 			fmt.Printf("  A%d = 0x%08X\n", i, st.A[i])
 		}
 		fmt.Printf("  USP = 0x%08X  SSP = 0x%08X  SR = 0x%04X\n", st.USP, st.SSP, st.SR)
+	}
+
+	if len(m.Opens) > 0 {
+		fmt.Printf("\n== 開過的檔案（%d 次）\n", len(m.Opens))
+		for _, o := range m.Opens {
+			fmt.Printf("  %s\n", o)
+		}
 	}
 
 	svcs := m.SortedServices()

@@ -64,6 +64,22 @@ type Machine struct {
 	// Vectors 是程式用 _INTVCS 換掉的 Human68k 向量。
 	Vectors map[uint16]uint32
 
+	// Drives 是軟碟機，依 PDA 低 4 位索引。原版磁碟由使用者自備。
+	Drives []*Drive
+
+	// Opens 記下每一次 _OPEN 的檔名與結果，這是「原版到底讀了什麼」的清單。
+	Opens []string
+	files map[uint16]*openFile
+
+	// Console 是 Human68k 的主控台；Keyboard 之後接上去（M4）。
+	Console  *Console
+	Keyboard interface{ Pop() uint16 }
+
+	// CRTMode 是 _CRTMOD 設的畫面模式；ScreenUse 是 _TGUSEMD 登記的使用狀態。
+	CRTMode   uint16
+	TVControl []uint32
+	ScreenUse map[byte]byte
+
 	services map[string]*Service
 	order    []*Service
 	steps    uint64
@@ -326,7 +342,7 @@ func (m *Machine) serviceIOCS() error {
 	}
 	// trap 堆的是「下一道指令的位址」，直接回去就好。
 	num := uint16(m.CPU.State.D[0] & 0xFF)
-	s := m.note("IOCS", num, "", pc-2)
+	s := m.note("IOCS", num, IOCSName(num), pc-2)
 	m.current = s
 	fn, ok := m.IOCSCalls[num]
 	if !ok {
