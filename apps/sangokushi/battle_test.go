@@ -35,11 +35,15 @@ const (
 	generalD = scratch + 0x0C0
 )
 
-// setupAttack 擺一個「弱者打強者」的盤面，回傳雙方的初始兵數。
+// setupAttack 擺一個「弱者打強者」的盤面。
 //
 // 兩邊的**君主編號都給 0**，所以 `sub_654D2` 的補正對雙方相同，
 // 在 `戰力(X) − 戰力(Y)` 裡抵銷——這條測試因此與難度設定無關。
-func setupAttack(t *testing.T, o *oracle.Oracle) {
+//
+// isolate 為真時攔掉音效與繪圖。兩種都要跑：**攔掉的版本證明公式本身，
+// 沒攔的版本證明「攔掉沒有改變答案」**——少了後者，結論就只涵蓋
+// 被攔剩下的那一段。
+func setupAttack(t *testing.T, o *oracle.Oracle, isolate bool) {
 	t.Helper()
 	must := func(err error) {
 		t.Helper()
@@ -64,7 +68,9 @@ func setupAttack(t *testing.T, o *oracle.Oracle) {
 		}
 		return 0
 	})
-	sangokushi.IsolateAttackFormula(o)
+	if isolate {
+		sangokushi.IsolateAttackFormula(o)
+	}
 }
 
 // TestVolleyDivisor 對照一斉攻撃的除數。
@@ -79,8 +85,17 @@ func setupAttack(t *testing.T, o *oracle.Oracle) {
 // 擺兩個合成單位、把亂數固定、對 k = 1..6 各叫一次 `sub_655B6`，
 // 看兵數少了多少。整支測試不到一秒，而且不需要磁碟。
 func TestVolleyDivisor(t *testing.T) {
+	for _, mode := range []struct {
+		name    string
+		isolate bool
+	}{{"攔掉音效與繪圖", true}, {"整支跑", false}} {
+		t.Run(mode.name, func(t *testing.T) { volleyDivisor(t, mode.isolate) })
+	}
+}
+
+func volleyDivisor(t *testing.T, isolate bool) {
 	o := loadExe(t)
-	setupAttack(t, o)
+	setupAttack(t, o, isolate)
 	base := o.Snapshot()
 
 	// 戰力(A) = 補正×16 + 0 + 0 + 10×2       = 補正×16 + 20
@@ -123,7 +138,7 @@ func TestVolleyDivisor(t *testing.T) {
 //	sub_65530(X, Y) = min(0, 戰力(X) − 戰力(Y) − min(rand(500), Y.兵))
 func TestAttackLossFormula(t *testing.T) {
 	o := loadExe(t)
-	setupAttack(t, o)
+	setupAttack(t, o, true)
 
 	// 戰力差先各自問一次：補正對雙方相同，所以差是 20 − 400 = −380。
 	pa, err := o.Call(sangokushi.Power, generalA)
@@ -162,7 +177,7 @@ func TestAttackLossFormula(t *testing.T) {
 // 站在城（類型 4）上的敵人打起來自己損失 ×4；站在山（類型 5）上則 ×0。
 func TestVolleyTerrainMultiplier(t *testing.T) {
 	o := loadExe(t)
-	setupAttack(t, o)
+	setupAttack(t, o, true)
 	base := o.Snapshot()
 
 	for _, tc := range []struct {
