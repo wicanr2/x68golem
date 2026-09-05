@@ -166,6 +166,8 @@ func main() {
 				"給與 MAME 逐位元組比對用")
 		shot = flag.String("shot", "",
 			"停下來時把文字平面存成 PNG")
+		shotG = flag.String("shot-graphics", "",
+			"停下來時把圖形平面（第 0 頁）存成 PNG。版面還沒對過 MAME，見 screen.go")
 		shotW = flag.Int("shot-width", 512, "截圖寬度")
 		shotH = flag.Int("shot-height", 512, "截圖高度")
 		logSvc = flag.Int("log-services", 0,
@@ -409,6 +411,21 @@ func main() {
 		}
 		f.Close()
 		fmt.Printf("\n截圖：%s（%d×%d，非 0 像素 %d）\n", *shot, *shotW, *shotH, n)
+	}
+
+	if *shotG != "" {
+		n := m.Bus.GraphicsNonZero(0, *shotW, *shotH)
+		f, err := os.Create(*shotG)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := png.Encode(f, m.Bus.GraphicsImage(0, *shotW, *shotH)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		f.Close()
+		fmt.Printf("圖形截圖：%s（非 0 像素 %d）\n", *shotG, n)
 	}
 
 	if len(svcLog) > 0 {
