@@ -81,6 +81,20 @@ type ExactByteWriteBus interface {
 	HasExactByteWriteTiming(address uint32) bool
 }
 
+// ExactWordWriteBus identifies addresses whose word-write phase has been
+// migrated to TimedBus. Unverified addresses keep the legacy instruction path.
+type ExactWordWriteBus interface {
+	TimedBus
+	HasExactWordWriteTiming(address uint32) bool
+}
+
+// ExactWordReadBus identifies addresses whose word-read phase has been
+// migrated to TimedBus. Unverified addresses keep the legacy instruction path.
+type ExactWordReadBus interface {
+	TimedBus
+	HasExactWordReadTiming(address uint32) bool
+}
+
 // BusFault exposes the information the MC68000 places in a bus-error frame.
 // Backends may implement it without importing this package.
 type BusFault interface {
@@ -113,6 +127,12 @@ func (c *CPU) AcceptAutovector(level uint8) (StepResult, bool, error) {
 
 // AcceptAutovectorAt is the cycle-aware form of AcceptAutovector.
 func (c *CPU) AcceptAutovectorAt(level uint8, epoch uint64) (StepResult, bool, error) {
+	return c.AcceptVectoredInterruptAt(level, 24+level, epoch)
+}
+
+// AcceptVectoredInterruptAt accepts an already-arbitrated level 1-6 interrupt
+// whose device supplied vector is known to the machine bus.
+func (c *CPU) AcceptVectoredInterruptAt(level, vector uint8, epoch uint64) (StepResult, bool, error) {
 	if c.Bus == nil {
 		return StepResult{}, false, fmt.Errorf("m68k: nil bus")
 	}
@@ -132,9 +152,9 @@ func (c *CPU) AcceptAutovectorAt(level uint8, epoch uint64) (StepResult, bool, e
 		err    error
 	)
 	if _, ok := c.Bus.(TimedBus); ok {
-		result, err = c.enterTimedStandardException(24+level, savedPC, 44)
+		result, err = c.enterTimedStandardException(vector, savedPC, 44)
 	} else {
-		result, err = c.enterStandardException(24+level, savedPC, nil, 44)
+		result, err = c.enterStandardException(vector, savedPC, nil, 44)
 	}
 	if err != nil {
 		return result, false, err
@@ -3510,8 +3530,10 @@ func byteAddressDelta(reg uint8) uint32 {
 
 type moveWordStep struct {
 	moveByteStep
-	opcode    uint16
-	initialPC uint32
+	opcode      uint16
+	initialPC   uint32
+	writeOffset uint32
+	writeWait   uint32
 }
 
 func (c *CPU) stepMOVEWord(opcode uint16) (StepResult, error) {
@@ -3633,7 +3655,16 @@ func (s *moveWordStep) readWordSource(mode, reg uint8) (uint16, uint32, bool, *S
 		result, err := c.enterAddressError(s.opcode, address, s.sourceFaultPC(mode, reg), s.transactions, 54+cost, readFC, "re", true)
 		return 0, cost, true, &result, err
 	}
-	value, err := c.Bus.ReadWord(address&addressMask, readFC)
+	var value uint16
+	var wait uint32
+	var err error
+	if bus, exact := c.Bus.(ExactWordReadBus); exact && bus.HasExactWordReadTiming(address) {
+		value, wait, err = bus.ReadWordAt(address&addressMask,
+			BusAccess{Clock: c.epoch + uint64(cost-4), FunctionCode: readFC})
+	} else {
+		value, err = c.Bus.ReadWord(address&addressMask, readFC)
+	}
+	cost += wait
 	if err != nil {
 		var fault BusFault
 		if errors.As(err, &fault) {
@@ -3730,6 +3761,7 @@ func (s *moveWordStep) writeWordDestination(mode, reg uint8, value uint16, sourc
 			if address&1 != 0 {
 				return s.wordWriteFault(s.opcode, address, savedPC, value, sourceCost, faultExtra)
 			}
+			s.writeOffset = sourceCost + 4
 			if err := s.writeWord(address, value); err != nil {
 				return 0, nil, err
 			}
@@ -3743,7 +3775,7 @@ func (s *moveWordStep) writeWordDestination(mode, reg uint8, value uint16, sourc
 			}
 			c.State.Prefetch = [2]uint16{first, second}
 			c.State.PC += 6
-			return cost, nil, nil
+			return cost + s.writeWait, nil, nil
 		}
 		high, err := s.consumeExtension()
 		if err != nil {
@@ -3771,6 +3803,7 @@ func (s *moveWordStep) writeWordDestination(mode, reg uint8, value uint16, sourc
 		}
 		return s.wordWriteFault(faultOpcode, address, savedPC, value, sourceCost, faultExtra)
 	}
+	s.writeOffset = sourceCost + cost - 4
 	if err := s.writeWord(address, value); err != nil {
 		return 0, nil, err
 	}
@@ -3778,9 +3811,9 @@ func (s *moveWordStep) writeWordDestination(mode, reg uint8, value uint16, sourc
 		c.setAddressRegister(reg, address+2)
 	}
 	if refillBeforeWrite {
-		return cost, nil, nil
+		return cost + s.writeWait, nil, nil
 	}
-	return cost, nil, s.refill()
+	return cost + s.writeWait, nil, s.refill()
 }
 
 func (s *moveWordStep) wordWriteFault(opcode uint16, address, savedPC uint32, value uint16, sourceCost, faultExtra uint32) (uint32, *StepResult, error) {
@@ -3791,7 +3824,14 @@ func (s *moveWordStep) wordWriteFault(opcode uint16, address, savedPC uint32, va
 
 func (s *moveWordStep) writeWord(address uint32, value uint16) error {
 	address &= addressMask
-	if err := s.cpu.Bus.WriteWord(address, value, s.dataFC); err != nil {
+	var err error
+	if bus, exact := s.cpu.Bus.(ExactWordWriteBus); exact && bus.HasExactWordWriteTiming(address) {
+		s.writeWait, err = bus.WriteWordAt(address, value,
+			BusAccess{Clock: s.cpu.epoch + uint64(s.writeOffset), FunctionCode: s.dataFC})
+	} else {
+		err = s.cpu.Bus.WriteWord(address, value, s.dataFC)
+	}
+	if err != nil {
 		return err
 	}
 	s.transactions = append(s.transactions, writeTransaction(address, s.dataFC, value))

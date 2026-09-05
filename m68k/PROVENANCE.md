@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| 上游 commit | `d0748bb5ea51e1c70f3109efcec7d6b1b1414e38` |
+| 上游 commit | `be97dae52a4b6e5008bf88cd60c7f7d20dc2b7ce` |
 | 複製日期 | 2026-09-06 |
 | 上游路徑 | `internal/m68k/` |
 

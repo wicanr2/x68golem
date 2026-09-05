@@ -69,6 +69,27 @@ func TestMC68000AutovectorTimedBus(t *testing.T) {
 	}
 }
 
+func TestMC68000VectoredInterruptUsesDeviceVector(t *testing.T) {
+	memory := SparseMemory{
+		0x110: 0x00, 0x111: 0x00, 0x112: 0x40, 0x113: 0x00,
+		0x4000: 0x4e, 0x4001: 0x71, 0x4002: 0x60, 0x4003: 0xfe,
+	}
+	cpu := CPU{Bus: memory, State: State{SSP: 0x1000, SR: 0x2300, PC: 0x3004,
+		Prefetch: [2]uint16{0x4e71, 0x60fe}}}
+	result, accepted, err := cpu.AcceptVectoredInterruptAt(6, 68, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accepted || result.Clocks != 44 || cpu.State.SR != 0x2600 || cpu.State.SSP != 0x0ffa ||
+		cpu.State.PC != 0x4004 || cpu.State.Prefetch != [2]uint16{0x4e71, 0x60fe} {
+		t.Fatalf("result=%+v accepted=%v state=%+v", result, accepted, cpu.State)
+	}
+	if memory[0x0ffc] != 0 || memory[0x0ffd] != 0 || memory[0x0ffe] != 0x30 || memory[0x0fff] != 0 {
+		t.Fatalf("saved PC bytes=%02x%02x%02x%02x want 00003000",
+			memory[0x0ffc], memory[0x0ffd], memory[0x0ffe], memory[0x0fff])
+	}
+}
+
 func TestMC68000STOPStateAndReset(t *testing.T) {
 	initial := State{D: [8]uint32{1}, A: [7]uint32{2}, USP: 3, SSP: 4,
 		SR: 0x2704, PC: 0x1004, Prefetch: [2]uint16{0x4e72, 0x2300}}
@@ -153,11 +174,16 @@ type wordReadFaultBus struct {
 
 type timedRecordingBus struct {
 	SparseMemory
-	accesses []BusAccess
-	wait     uint32
+	accesses      []BusAccess
+	wait          uint32
+	exactWordRead uint32
 }
 
 func (b *timedRecordingBus) HasExactByteWriteTiming(uint32) bool { return true }
+func (b *timedRecordingBus) HasExactWordWriteTiming(uint32) bool { return true }
+func (b *timedRecordingBus) HasExactWordReadTiming(address uint32) bool {
+	return address == b.exactWordRead
+}
 
 func (b *timedRecordingBus) ReadByteAt(address uint32, access BusAccess) (byte, uint32, error) {
 	b.accesses = append(b.accesses, access)
@@ -233,6 +259,56 @@ func TestMOVEByteImmediateToAddressIndirectAppliesTimedWriteWait(t *testing.T) {
 		result.Transactions[1].Address != 0x200 || result.Transactions[1].FC != 5 ||
 		result.Transactions[1].Size != 1 || !result.Transactions[1].UDS || result.Transactions[1].LDS {
 		t.Fatalf("transactions=%+v", result.Transactions)
+	}
+}
+
+func TestMOVEWordStackDisplacementToAbsoluteShortAppliesTimedWriteWait(t *testing.T) {
+	bus := &timedRecordingBus{SparseMemory: SparseMemory{
+		0x104: 0x02, 0x105: 0x00,
+		0x106: 0x4e, 0x107: 0x71,
+		0x108: 0x4e, 0x109: 0x75,
+		0x206: 0x12, 0x207: 0x34,
+	}, wait: 4}
+	cpu := CPU{Bus: bus, State: State{
+		SSP: 0x200, SR: supervisor, PC: 0x104,
+		Prefetch: [2]uint16{0x31ef, 0x0006},
+	}}
+	result, err := cpu.StepAt(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bus.accesses, []BusAccess{{Clock: 1012, FunctionCode: 5}}) {
+		t.Fatalf("timed accesses=%+v", bus.accesses)
+	}
+	if result.Clocks != 24 || cpu.State.PC != 0x10a ||
+		cpu.State.Prefetch != [2]uint16{0x4e71, 0x4e75} || bus.SparseMemory[0x200] != 0x12 ||
+		bus.SparseMemory[0x201] != 0x34 {
+		t.Fatalf("result=%+v state=%+v memory=%+v", result, cpu.State, bus.SparseMemory)
+	}
+	if len(result.Transactions) != 5 {
+		t.Fatalf("transactions=%+v", result.Transactions)
+	}
+}
+
+func TestMOVEWordAbsoluteShortToDataRegisterAppliesTimedReadWait(t *testing.T) {
+	bus := &timedRecordingBus{SparseMemory: SparseMemory{
+		0x104: 0x4e, 0x105: 0x71,
+		0x106: 0x4e, 0x107: 0x75,
+		0x200: 0x12, 0x201: 0x34,
+	}, wait: 4, exactWordRead: 0x200}
+	cpu := CPU{Bus: bus, State: State{
+		SR: supervisor, PC: 0x104, Prefetch: [2]uint16{0x3038, 0x0200},
+	}}
+	result, err := cpu.StepAt(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bus.accesses, []BusAccess{{Clock: 1004, FunctionCode: 5}}) {
+		t.Fatalf("timed accesses=%+v", bus.accesses)
+	}
+	if result.Clocks != 16 || cpu.State.PC != 0x108 || cpu.State.D[0] != 0x1234 ||
+		cpu.State.Prefetch != [2]uint16{0x4e71, 0x4e75} {
+		t.Fatalf("result=%+v state=%+v", result, cpu.State)
 	}
 }
 

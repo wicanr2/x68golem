@@ -28,8 +28,9 @@ MAME 是對的參考實作，**這個專案不取代它**——畫面驗收拿 M
 （`tools/go.sh test ./m68k/`）。核心是從
 [`atari-talos-ai-toolkit`](https://github.com/wicanr2/atari-talos-ai-toolkit)
 原封複製的——Atari ST 與 X68000 都是 MC68000，這一層沒有平台差異
-（`m68k/PROVENANCE.md`）。`SANMAIN.Z` 用到的指令**沒有缺口**——先前缺的
-`addx.l` 與「ORI／ANDI／EORI 到 CCR／SR」都補在上游，語料驗過才複製回來。
+（`m68k/PROVENANCE.md`，同步於上游 `be97dae`）。`SANMAIN.Z` 用到的指令
+**沒有缺口**——先前缺的 `addx.l` 與「ORI／ANDI／EORI 到 CCR／SR」都補在上游，
+語料驗過才複製回來。
 
 **《三國志》從冷啟動走到指令畫面，並下完一個月的指令**——189 年 1 月 →
 189 年 2 月，30 個按鍵、9,200 萬道指令，`go test` 27.5 秒
