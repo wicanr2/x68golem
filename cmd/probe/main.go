@@ -149,6 +149,11 @@ func main() {
 			"掃映像裡的 $FE00–$FEFF（FLOAT2.X 的浮點呼叫）並列出號碼")
 		disks = flag.String("disks", "",
 			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
+		keys = flag.String("keys", "",
+			"預先排進鍵盤佇列的字元（\\n 代表 Return）")
+		watch = flag.String("watch", "",
+			"監看這些主記憶體位址的寫入（十六進位，逗號分隔），印出 PC 與值")
+		watchMax = flag.Int("watch-max", 40, "最多印幾筆監看紀錄")
 		hot = flag.Int("hot", 0, "印出執行次數最多的 N 個位址（回答「它卡在哪」）")
 		shot = flag.String("shot", "",
 			"停下來時把文字平面存成 PNG")
@@ -237,6 +242,10 @@ func main() {
 	m.InstallSprite()
 	m.InstallFloat()
 	m.InstallVDisp()
+	m.InstallKeyboard()
+	if *keys != "" {
+		m.Keys.PushString(strings.ReplaceAll(*keys, "\\n", "\n"))
+	}
 	if *randFixed >= 0 {
 		m.RNG.Mode = x68k.RNGFixed
 		m.RNG.Value = uint32(*randFixed)
@@ -274,6 +283,24 @@ func main() {
 	if *hot > 0 {
 		m.HotPC = map[uint32]int{}
 	}
+	var watchLog []string
+	if *watch != "" {
+		m.Bus.Watch = map[uint32]bool{}
+		for _, item := range strings.Split(*watch, ",") {
+			v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(item), "0x"), 16, 32)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "-watch %q 不是十六進位位址\n", item)
+				os.Exit(2)
+			}
+			m.Bus.Watch[uint32(v)] = true
+		}
+		m.Bus.OnWatch = func(addr, v uint32, size int, pc uint32) {
+			if len(watchLog) < *watchMax {
+				watchLog = append(watchLog,
+					fmt.Sprintf("0x%06X ← 0x%0*X（%d bytes）PC=0x%06X", addr, size*2, v, size, pc))
+			}
+		}
+	}
 	var svcLog []string
 	if *logSvc > 0 {
 		m.ServiceLog = func(line string) {
@@ -304,6 +331,13 @@ func main() {
 		fmt.Println("\n⚠ -lenient：沒實作的一律回 0。程式會依回傳值分支，" +
 			"所以以下清單只能當「還有哪些服務存在」的線索，不能當事實——" +
 			"可能少（走錯路沒碰到），也可能多（走進正常情況不會進的錯誤處理）。")
+	}
+
+	if len(watchLog) > 0 {
+		fmt.Printf("\n== 監看到的寫入（前 %d 筆）\n", len(watchLog))
+		for _, l := range watchLog {
+			fmt.Println("  " + l)
+		}
 	}
 
 	if *hot > 0 {

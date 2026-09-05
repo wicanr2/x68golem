@@ -121,6 +121,11 @@ type Bus struct {
 	// PC 由 Machine 在每一步之前更新，讓記帳知道是誰做的。
 	PC uint32
 
+	// Watch 裡的位址每次被寫都會呼叫 OnWatch。主記憶體的寫入是熱路徑，
+	// 所以只有在 Watch 非 nil 時才查。
+	Watch   map[uint32]bool
+	OnWatch func(addr uint32, v uint32, size int, pc uint32)
+
 	// OnRegisterWrite 讓上層攔一個位元組寫入（DMAC 那類有副作用的暫存器）。
 	// 回傳 true 表示已經處理掉了。
 	OnRegisterWrite func(addr uint32, v byte) bool
@@ -259,6 +264,9 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 		if !mainRAM {
 			b.note(a, true, 1)
 		}
+		if b.Watch != nil && b.Watch[a] {
+			b.OnWatch(a, uint32(value), 1, b.PC)
+		}
 		mem[off] = value
 		return nil
 	}
@@ -287,6 +295,9 @@ func (b *Bus) WriteWord(address uint32, value uint16, _ uint8) error {
 	if mem, off, mainRAM, ok := b.resolve(a, 2); ok {
 		if !mainRAM {
 			b.note(a, true, 2)
+		}
+		if b.Watch != nil && (b.Watch[a] || b.Watch[a+1]) {
+			b.OnWatch(a, uint32(value), 2, b.PC)
 		}
 		mem[off] = byte(value >> 8)
 		mem[off+1] = byte(value)

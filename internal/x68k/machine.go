@@ -78,13 +78,18 @@ type Machine struct {
 	Opens []string
 	files map[uint16]*openFile
 
-	// Console 是 Human68k 的主控台；Keyboard 之後接上去（M4）。
-	Console  *Console
-	Keyboard interface{ Pop() uint16 }
+	// Console 是 Human68k 的主控台；Keys 是鍵盤佇列。
+	Console *Console
+	Keys    *Keyboard
+
+	// OPMCalls 記下每一次 _OPMDRV 的功能號碼（看得到遊戲要播什麼）。
+	OPMCalls []uint32
 
 	// CRTMode 是 _CRTMOD 設的畫面模式；ScreenUse 是 _TGUSEMD 登記的使用狀態。
 	CRTMode   uint16
 	TVControl []uint32
+	// VPage 是 _VPAGE 設的圖形顯示頁。
+	VPage byte
 	ScreenUse map[byte]byte
 
 	services map[string]*Service
@@ -105,6 +110,7 @@ type Machine struct {
 
 	// DMAC 的狀態（dmac.go）。
 	dmacPending   bool
+	dmacDoneAt    uint64
 	dmacVector    byte
 	DMACTransfers int
 
@@ -153,6 +159,7 @@ func NewMachine(im *human68k.Image, ramSize int) (*Machine, error) {
 		services:  map[string]*Service{},
 	}
 	m.installVectors()
+	m.initDMAC()
 	bus.OnRegisterWrite = func(addr uint32, v byte) bool {
 		if addr < dmacBase || addr >= dmacBase+dmacChannels*dmacChanSize {
 			return false

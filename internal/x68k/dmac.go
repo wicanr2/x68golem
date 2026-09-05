@@ -28,7 +28,40 @@ const (
 	dmacNIV = 0x25 // 正常中斷向量編號
 
 	dmacCSRComplete = 0x80 // COC：通道操作完成
+
+	// dmacVectorBase：通道 0–3 的正常中斷向量編號 $67–$6A。
+	//
+	// 依據（L2）：《三國志》的 DMA 完成處理常式用
+	// `_B_INTVCS(0x6A, handler)` 掛上去，而它讀寫的是通道 3 的 CSR
+	// （`0xE840C0`）。0x6A 對通道 3 ⇒ 基準 0x67。真機上這幾個值是 IPL ROM
+	// 在開機時寫進 DMAC 的 NIV 暫存器的，遊戲不會自己寫——所以我們要先放好，
+	// 否則中斷發出去沒有向量可跳（`docs/findings/007`）。
+	dmacVectorBase = 0x67
+
+	// dmacCyclesPerByte：搬一個 byte 要多久。
+	//
+	// **零延遲會壞事，這是量出來的**：DMA 一寫下開始位元就立刻發中斷的話，
+	// 中斷會插在「啟動 DMA」與「設忙碌旗標」這兩行之間——
+	//
+	//	0x0710EA  move.b #$88,($E840C7)   ← 開始
+	//	0x071100  move.b #1,($711A2)      ← 設忙碌
+	//
+	// 處理常式先把忙碌清成 0（那時它本來就是 0），遊戲接著才設成 1，
+	// 然後永遠等不到有人再清它。監看那兩個位址就會看到這個順序。
+	//
+	// L3：這個值取自 ADPCM 約 15.6 kHz、一個 byte 兩個取樣 ⇒ 每秒約 7,800 bytes，
+	// 10 MHz 的 CPU 下每 byte 約 1,282 週期。要精確要等實作 ADPCM，
+	// 但**只要不是 0，那個競態就不存在**。
+	dmacCyclesPerByte = 1282
 )
+
+// initDMAC 放好 IPL 會寫、而遊戲假設已經在那裡的 DMAC 暫存器。
+func (m *Machine) initDMAC() {
+	for ch := 0; ch < dmacChannels; ch++ {
+		base := dmacBase + uint32(ch)*dmacChanSize
+		m.Bus.latch[base+dmacNIV] = byte(dmacVectorBase + ch)
+	}
+}
 
 // dmacWrite 處理寫進 DMAC 暫存器；回傳是否要在這一步之後發中斷。
 func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
@@ -49,7 +82,12 @@ func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
 	if reg != dmacCCR || v&0x80 == 0 {
 		return 0, false
 	}
-	// 開始位元被設起來：立刻宣告完成。
+	// 開始位元被設起來：排定完成時間。
+	count := uint64(m.Bus.latch[base+dmacMTC])<<8 | uint64(m.Bus.latch[base+dmacMTC+1])
+	if count == 0 {
+		count = 1
+	}
+	m.dmacDoneAt = m.cycles + count*dmacCyclesPerByte
 	m.Bus.latch[base+dmacCCR] = v &^ 0x80
 	m.Bus.latch[base+dmacMTC] = 0
 	m.Bus.latch[base+dmacMTC+1] = 0
@@ -60,7 +98,7 @@ func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
 
 // serviceDMAC 在 DMAC 宣告完成之後，透過遊戲自己裝的向量發一次中斷。
 func (m *Machine) serviceDMAC() (bool, error) {
-	if !m.dmacPending || len(m.callStack) > 0 {
+	if !m.dmacPending || m.cycles < m.dmacDoneAt || len(m.callStack) > 0 {
 		return false, nil
 	}
 	m.dmacPending = false

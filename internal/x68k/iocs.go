@@ -7,12 +7,20 @@ func (m *Machine) InstallIOCS() {
 	m.IOCSCalls[0x0C] = iocsTvctrl
 	m.IOCSCalls[0x0E] = iocsTgusemd
 	m.IOCSCalls[0x10] = iocsCrtmod
-	m.IOCSCalls[0x70] = iocsNoop // _MS_INIT：沒有滑鼠
-	m.IOCSCalls[0x72] = iocsNoop // _MS_CUROF：沒有滑鼠游標
+	// 滑鼠：這台機器上沒有。初始化、顯示／隱藏游標本來就沒有事情可做；
+	// 讀狀態、讀移動量、讀按鍵時間一律回 0＝沒有動作、沒有按下。
+	// **回 0 在這裡是真話**，不是樁。
+	for _, n := range []uint16{0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79} {
+		m.IOCSCalls[n] = iocsNoop
+	}
 	m.IOCSCalls[0x7D] = iocsNoop // _SKEY_MOD：沒有軟體鍵盤
 	m.IOCSCalls[0x80] = iocsBIntvcs
 	m.IOCSCalls[0x81] = iocsSuper
 	m.IOCSCalls[0x90] = iocsGClrOn
+	m.IOCSCalls[0x20] = iocsBPutc
+	m.IOCSCalls[0x2E] = iocsBConsol
+	m.IOCSCalls[0xB2] = iocsVpage
+	m.IOCSCalls[0xF0] = iocsOpmdrv
 }
 
 // iocsNoop 給「這台機器上沒有那個東西」的呼叫用：滑鼠、軟體鍵盤。
@@ -94,6 +102,53 @@ func iocsBIntvcs(m *Machine) error {
 	old := m.Vectors[num]
 	m.Vectors[num] = addr
 	m.SetResult(old)
+	return nil
+}
+
+// iocsBPutc 是 `$20 _B_PUTC`（d1.w 字碼）：把一個字送到主控台。
+// 與 `_CONCTRL` 模式 0 是同一件事，所以寫進同一個緩衝區。
+func iocsBPutc(m *Machine) error {
+	m.Console.putc(byte(m.CPU.State.D[1]))
+	m.SetResult(0)
+	return nil
+}
+
+// iocsBConsol 是 `$2E _B_CONSOL`（d1.l 起點、d2.l 範圍）：設定文字的顯示範圍。
+// −1 表示不改。
+func iocsBConsol(m *Machine) error {
+	if int32(m.CPU.State.D[1]) != -1 {
+		m.Console.RangeStart = m.CPU.State.D[1]
+	}
+	if int32(m.CPU.State.D[2]) != -1 {
+		m.Console.RangeSize = m.CPU.State.D[2]
+	}
+	m.SetResult(0)
+	return nil
+}
+
+// iocsVpage 是 `$B2 _VPAGE`（d1.b 頁面位元 0–3）：設定圖形畫面顯示哪幾頁。
+// d1 = −1 表示只問不改。
+func iocsVpage(m *Machine) error {
+	old := uint32(m.VPage)
+	if int32(m.CPU.State.D[1]) != -1 {
+		m.VPage = byte(m.CPU.State.D[1] & 0x0F)
+	}
+	m.SetResult(old)
+	return nil
+}
+
+// iocsOpmdrv 是 `$F0 _OPMDRV`（d1.l 功能號碼）：FM 音源驅動。
+//
+// 那是 `CONFIG.SYS` 載的 `OPMDRV.X` 提供的服務（`docs/findings/004`），
+// 我們沒有音源，也**不在 MVP 範圍內**（`docs/spec/001`）。這裡把呼叫記下來
+// 回 0：記下來是為了看得到「遊戲什麼時候要播哪一首」，那對對拍有用；
+// 發聲沒有。
+//
+// ⚠ 如果將來發現遊戲會**等** OPMDRV 的回傳值才前進，這個回 0 就不夠了
+// ——那時要的是實作，不是再加一個猜的值。
+func iocsOpmdrv(m *Machine) error {
+	m.OPMCalls = append(m.OPMCalls, m.CPU.State.D[1])
+	m.SetResult(0)
 	return nil
 }
 

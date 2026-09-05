@@ -54,6 +54,7 @@ func (m *Machine) SetResult(v uint32) { m.CPU.State.D[0] = v }
 // InstallDOSCalls 登記目前實作好的 DOS call。
 func (m *Machine) InstallDOSCalls() {
 	m.DOSCalls[0x25] = dosIntvcs
+	m.DOSCalls[0x20] = dosSuper
 	m.DOSCalls[0x21] = dosFnckey
 	m.DOSCalls[0x44] = dosIoctrl
 	m.DOSCalls[0x4A] = dosSetblock
@@ -90,6 +91,21 @@ func dosIntvcs(m *Machine) error {
 	m.Vectors[num] = addr
 	m.SetResult(old)
 	return nil
+}
+
+// dosSuper 是 `$FF20 _SUPER(ssp.l)`：與 IOCS 的 `$81 _B_SUPER` 是同一件事，
+// 只是參數走堆疊而不是 A1。語意與坑都一樣，所以直接共用實作
+// ——**一條規則只留一份實作**。
+func dosSuper(m *Machine) error {
+	arg, err := m.ArgLongAt(0)
+	if err != nil {
+		return err
+	}
+	saved := m.CPU.State.A[1]
+	m.CPU.State.A[1] = arg
+	err = iocsSuper(m)
+	m.CPU.State.A[1] = saved
+	return err
 }
 
 // dosFnckey 是 `$FF21 _FNCKEY(模式.w, 緩衝區.l)`：讀寫功能鍵的定義字串。

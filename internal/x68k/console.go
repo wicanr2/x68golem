@@ -20,7 +20,9 @@ type Console struct {
 	ScreenMod uint16 // _CONCTRL 模式 16
 	ScrollTop uint16 // _CONCTRL 模式 15
 	ScrollLen uint16
-	CursorOn  bool
+	CursorOn   bool
+	RangeStart uint32 // _B_CONSOL
+	RangeSize  uint32
 	Clears    int // 清畫面的次數
 }
 
@@ -50,8 +52,8 @@ func dosInpout(m *Machine) error {
 	}
 	switch code {
 	case 0xFF, 0xFE:
-		if m.Keyboard != nil {
-			m.SetResult(uint32(m.Keyboard.Pop()))
+		if m.Keys != nil {
+			m.SetResult(uint32(m.Keys.Pop()))
 			return nil
 		}
 		m.SetResult(0)
