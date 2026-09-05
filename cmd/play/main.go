@@ -25,6 +25,11 @@ func main() {
 		z       = flag.String("z", "", "Human68k `.Z` 執行檔（玩家自備）")
 		disks   = flag.String("disks", "", "軟碟映像，逗號分隔（玩家自備）")
 		cgrom   = flag.String("cgrom", "", "CGROM（玩家自備）")
+		drivers = flag.String("drivers", "",
+			"先跑這些 `.X` 驅動（逗號分隔）。載入 FLOAT2.X 之後亂數由它提供，"+
+				"-rand-fixed 就不再有作用")
+		passthru = flag.Bool("rand-passthrough", false,
+			"亂數走原版的 FLOAT2.X（要配 -drivers）")
 		seq     = flag.String("seq", "", `按鍵序列（\r 是 Return）`)
 		out     = flag.String("out", "workplace/out", "截圖與 dump 的輸出目錄")
 		settle  = flag.Uint64("settle", 2_000_000, "觀察窗有多少個週期；連續兩個窗變動很少就算畫面靜了")
@@ -35,6 +40,9 @@ func main() {
 		randVal = flag.Uint64("rand-fixed", 12345, "把 rand() 固定成這個值")
 	)
 	verbose := flag.Bool("verbose", false, "每個觀察窗印出變動了幾個位址")
+	busyOK := flag.Bool("busy-ok", false,
+		"畫面一直在動也照樣送鍵。**動畫畫面需要它**——能力值抽取那一頁的數字"+
+			"會一直跳（原版就是這樣），永遠不會「靜下來」")
 	flag.Parse()
 	if *verbose {
 		oracle.ScreenWindowLog = func(w, n int) {
@@ -56,6 +64,14 @@ func main() {
 		Exe: *z, CGROM: *cgrom, LatchIO: true,
 		Rand: oracle.RandSource{Fixed: &fixed},
 	}
+	if *passthru {
+		cfg.Rand = oracle.RandSource{}
+	}
+	if *drivers != "" {
+		for _, d := range strings.Split(*drivers, ",") {
+			cfg.Drivers = append(cfg.Drivers, strings.TrimSpace(d))
+		}
+	}
 	if *disks != "" {
 		for _, d := range strings.Split(*disks, ",") {
 			cfg.Disks = append(cfg.Disks, strings.TrimSpace(d))
@@ -70,8 +86,11 @@ func main() {
 
 	for i, r := range []byte(keys) {
 		if err := o.WaitSettled(*settle, *minChange, *perKey); err != nil {
-			fmt.Fprintf(os.Stderr, "第 %d 鍵之前：%v\n", i, err)
-			os.Exit(3)
+			if !*busyOK {
+				fmt.Fprintf(os.Stderr, "第 %d 鍵之前：%v\n", i, err)
+				os.Exit(3)
+			}
+			fmt.Printf("第 %2d 鍵 0x%02X：畫面一直在動，照樣送（%v）\n", i, r, err)
 		}
 		save(o, filepath.Join(*out, fmt.Sprintf("step-%02d-before-%02X.png", i, r)))
 		fmt.Printf("第 %2d 鍵 0x%02X：畫面已靜（%d 道指令）\n", i, r, o.Steps())

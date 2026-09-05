@@ -57,7 +57,7 @@ o.Intercept(addr, func(f *x68.Frame) (ret uint32, skip bool))
 
 | 模式 | 行為 | 用途 |
 |---|---|---|
-| `Passthrough` | 不攔，原版自己算 | 基準線 |
+| `Passthrough` | 不攔，**原版的 `FLOAT2.X` 自己算**（要先用 `Drivers` 把它載進來，`docs/findings/014`）| 基準線 |
 | `Record` | 攔但照原值回，同時記下 `(pc, n, 值)` | 取得一條真實的亂數流 |
 | `Replay` | 照錄下來的流逐項回放 | **同一條流、不同盤面**——正是這一輪定出一斉除數用的判準 |
 | `Fixed(v)` | 每次都回同一個值 | 把亂數從方程式裡消掉，只剩規則 |
@@ -65,6 +65,10 @@ o.Intercept(addr, func(f *x68.Frame) (ret uint32, skip bool))
 
 **報錯而不是回退到亂數**：用完就 fail，不要安靜地換一個來源——
 安靜的替代品會讓「沒對到」看起來像「對到了」。
+
+⚠ 直通模式**只有在 `FLOAT2.X` 真的載進來時才成立**。沒載的話
+`$FE0E` 會落到我們的樁上，而那裡是 fail-closed 的——不會安靜地給一個
+自己算的亂數。
 
 ### 4.3 這對對拍的意義
 

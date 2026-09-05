@@ -63,7 +63,7 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 | M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **完成**（9 個 DOS call ＋ 30 個 IOCS ＋ FAT12 ＋ 軟碟 ＋ 精靈 ＋ DMAC ＋ 鍵盤；`TestBootToTitle`）|
 | M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **文字面完成**（131,072 bytes 與 MAME 相同，`docs/findings/009`）；圖形面未驗 |
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | **完成**：冷啟動 → 指令畫面 → 下完一個月 → 189 年 2 月（30 鍵、9,200 萬道指令、`go test` 27.5 秒，`TestPlayOneMonth`）|
-| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **介面完成**（`oracle` 套件：`Load`／`Run`／`RunUntil`／`Keys`／`Byte`–`Long`／`TextPlane`／`OnCall`／`Intercept`／`Snapshot`／`Restore`）；還沒拿去重跑戰場對照 |
+| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **介面完成**（`oracle`：`Load`／`Run`／`WaitSettled`／`Keys`／`Byte`–`Long`／`TextPlane`／`OnCall`／`Intercept`／`Snapshot`／`Restore`），**四種亂數模式都能用**（`Fixed`／`Seq`／`Replay`／直通——直通是把原版的 `FLOAT2.X` 載進來跑，`docs/findings/014`）；還沒拿去重跑戰場對照 |
 | M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | **完成**：四層都在（`internal/*` 機器、`oracle/` 觀測、`runtime/xc/` C 呼叫慣例、`apps/sangokushi/` 遊戲專屬）；機器層沒有任何遊戲專屬字串 |
 
 ## 用法

@@ -14,6 +14,7 @@ func (m *Machine) InstallIOCS() {
 		m.IOCSCalls[n] = iocsNoop
 	}
 	m.IOCSCalls[0x7D] = iocsNoop // _SKEY_MOD：沒有軟體鍵盤
+	m.InstallPeekPoke()
 	m.IOCSCalls[0x80] = iocsBIntvcs
 	m.IOCSCalls[0x81] = iocsSuper
 	m.IOCSCalls[0x90] = iocsGClrOn

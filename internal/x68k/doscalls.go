@@ -54,6 +54,8 @@ func (m *Machine) SetResult(v uint32) { m.CPU.State.D[0] = v }
 // InstallDOSCalls 登記目前實作好的 DOS call。
 func (m *Machine) InstallDOSCalls() {
 	m.DOSCalls[0x25] = dosIntvcs
+	m.installDriverCalls()
+	m.DOSCalls[0x09] = dosPrint
 	m.DOSCalls[0x20] = dosSuper
 	m.DOSCalls[0x21] = dosFnckey
 	m.DOSCalls[0x44] = dosIoctrl
@@ -90,6 +92,34 @@ func dosIntvcs(m *Machine) error {
 	old := m.Vectors[num]
 	m.Vectors[num] = addr
 	m.SetResult(old)
+	return nil
+}
+
+// dosPrint 是 `$FF09 _PRINT(字串.l)`：印一個字串到主控台。
+//
+// **結尾是 NUL，不是 MS-DOS 那個 `$`。** 一開始照 MS-DOS 的習慣找 `$`，
+// 結果把 `FLOAT2.X` 招牌後面的整段程式碼都當成字串印出來了——
+// 那一段輸出本身就是證據（`docs/findings/014`）。
+//
+// 驅動裝好之後會印一行招牌，所以跑 `FLOAT2.X` 需要它。
+// 印出來的東西進 Console 的緩衝區——**看得到驅動說了什麼**，
+// 那是「它真的裝起來了嗎」最直接的證據。
+func dosPrint(m *Machine) error {
+	ptr, err := m.ArgLongAt(0)
+	if err != nil {
+		return err
+	}
+	for i := uint32(0); i < 4096; i++ {
+		b, err := m.Bus.ReadByte(ptr+i, 5)
+		if err != nil {
+			return err
+		}
+		if b == 0 {
+			break
+		}
+		m.Console.putc(b)
+	}
+	m.SetResult(0)
 	return nil
 }
 

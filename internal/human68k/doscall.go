@@ -18,6 +18,8 @@ import "fmt"
 // 比實際知道的多。沒收錄的號碼在報告裡就印 `$FFxx`。
 var dosCallNames = map[uint16]string{
 	0x06: "_INPOUT",
+	0x00: "_EXIT",
+	0x09: "_PRINT",
 	0x1A: "_GETSS",
 	0x21: "_FNCKEY",
 	0x20: "_SUPER",
@@ -28,7 +30,9 @@ var dosCallNames = map[uint16]string{
 	0x3F: "_READ",
 	0x40: "_WRITE",
 	0x42: "_SEEK",
+	0x31: "_KEEPPR",
 	0x44: "_IOCTRL",
+	0x4C: "_EXIT2",
 }
 
 // DOSCallName 把 F-line 指令字翻成名稱。

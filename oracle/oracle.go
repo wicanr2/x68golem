@@ -25,6 +25,15 @@ type Config struct {
 	Disks []string
 	// CGROM 是字模。不給的話畫面上的字會是空白的。
 	CGROM string
+
+	// Drivers 是要先跑的 `.X` 驅動（`CONFIG.SYS` 的 `DEVICE=`）。
+	//
+	// **載入 `FLOAT2.X` 之後亂數就是原版的**：它會把 F-line 向量換成
+	// 自己的處理常式，`$FE0E`（`rand`）因此走真的程式碼，`Rand` 那組設定
+	// 也就不再有作用（`docs/findings/014`）。
+	Drivers []string
+	// DriverBase 是第一支驅動載到哪裡，預設 0x20000。
+	DriverBase uint32
 	// RAMSize 預設 2 MB。
 	RAMSize int
 
@@ -95,6 +104,25 @@ func Load(cfg Config) (*Oracle, error) {
 	}
 	m.Bus.LatchIO = cfg.LatchIO
 	m.Bus.StrictIO = !cfg.LatchIO
+
+	base := cfg.DriverBase
+	if base == 0 {
+		base = 0x20000
+	}
+	for _, p := range cfg.Drivers {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		d, err := m.LoadX(data, base)
+		if err != nil {
+			return nil, fmt.Errorf("%s：%w", p, err)
+		}
+		if err := m.RunDriver(d, 20_000_000); err != nil {
+			return nil, fmt.Errorf("%s：%w", p, err)
+		}
+		base += (d.Size + 0x1FFF) &^ 0xFFF
+	}
 
 	switch {
 	case cfg.Rand.Fixed != nil:

@@ -150,6 +150,10 @@ func main() {
 			"掃映像裡的 $FE00–$FEFF（FLOAT2.X 的浮點呼叫）並列出號碼")
 		disks = flag.String("disks", "",
 			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
+		drivers = flag.String("drivers", "",
+			"先跑這些 `.X` 驅動（逗號分隔），再載入主程式。"+
+				"《三國志》的 CONFIG.SYS 載了 \\SYS\\FLOAT2.X 與 \\SYS\\OPMDRV.X")
+		driverBase = flag.Uint64("driver-base", 0x20000, "第一支驅動載到哪個位址")
 		cgrom = flag.String("cgrom", "",
 			"CGROM 檔（字模，玩家自備；不掛的話字是空白的）")
 		keyDelay = flag.Uint64("key-delay", 20_000_000,
@@ -254,6 +258,36 @@ func main() {
 	m.InstallFloat()
 	m.InstallVDisp()
 	m.InstallKeyboard()
+	if *drivers != "" {
+		base := uint32(*driverBase)
+		for _, p := range strings.Split(*drivers, ",") {
+			p = strings.TrimSpace(p)
+			data, err := os.ReadFile(p)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			before := m.LineFVector()
+			d, err := m.LoadX(data, base)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Printf("驅動 %s：基底 0x%06X 進入點 0x%06X 長度 %d 重定位 %d\n",
+				p, d.Base, d.Entry, d.Size, d.Relocs)
+			if err := m.RunDriver(d, 20_000_000); err != nil {
+				fmt.Fprintf(os.Stderr, "  %v\n", err)
+				os.Exit(3)
+			}
+			fmt.Printf("  裝好了：F-line 向量 0x%06X → 0x%06X\n", before, m.LineFVector())
+			if out := m.Console.Out; len(out) > 0 {
+				fmt.Printf("  它說：%q\n", string(out))
+				m.Console.Out = nil
+			}
+			base += (d.Size + 0x1FFF) &^ 0xFFF
+		}
+		fmt.Println()
+	}
 	if *cgrom != "" {
 		data, err := os.ReadFile(*cgrom)
 		if err != nil {

@@ -126,6 +126,9 @@ type Machine struct {
 	// 用來回答「這一連串服務裡，堆疊是在哪一步歪掉的」。
 	ServiceLog func(line string)
 
+	// driverDone 由 _EXIT／_KEEPPR 設起來，讓 RunDriver 知道驅動裝好了。
+	driverDone bool
+
 	// systemSSP 是 _B_SUPER 進 supervisor 之前的系統堆疊指標。
 	systemSSP uint32
 
