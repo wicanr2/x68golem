@@ -4,6 +4,15 @@ package x68k
 
 import "fmt"
 
+// VRAM 的位置與大小。這兩塊**是真的記憶體**，不是暫存器——
+// 程式會直接讀寫它們，M3 的畫面也要從這裡取。
+const (
+	GVRAMBase = 0xC00000
+	GVRAMSize = 0x200000 // 2 MB
+	TVRAMBase = 0xE00000
+	TVRAMSize = 0x080000 // 512 KB＝四個平面各 128 KB
+)
+
 // DefaultRAMSize 是預設主記憶體大小（2 MB）。
 // SANMAIN.Z 的 bss 結束在 0x8B874，遠小於這個值。
 const DefaultRAMSize = 0x200000
@@ -90,17 +99,59 @@ type IOAccess struct {
 // 而且 probe 會在報告裡講明「這一刻之後的紀錄不可信」。
 type Bus struct {
 	RAM      []byte
+	GVRAM    []byte
+	TVRAM    []byte
 	StrictIO bool
+
+	// LatchIO：把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。
+	//
+	// 這不是模擬硬體，是**讓「程式寫了自己再讀回來確認」這種等待迴圈走得完**。
+	// SANMAIN.Z 有一段就是這樣：`ori.b #2,($E80481)` 之後
+	// `btst #1,(a0)` / `beq` 等自己那一位變成 1；讀永遠回 0 就會卡死。
+	// 真正的行為（什麼時候該由硬體清掉）要等實作 CRTC 時才有答案，
+	// 在那之前這個模式讓執行走得下去，而報告仍然會把每一次存取記下來。
+	LatchIO bool
 
 	// PC 由 Machine 在每一步之前更新，讓記帳知道是誰做的。
 	PC uint32
 
+	// StopOn 裡的位址一被碰到就回錯誤讓執行停下。
+	// 用途是「我要看它是怎麼走到這個暫存器的」——停下來時軌跡還在。
+	StopOn map[uint32]bool
+
+	// CRTC 目前只實作動作埠（crtc.go）。
+	CRTC *CRTC
+	// Cycles 由 Machine 更新，讓需要時間的周邊有時間可用。
+	Cycles uint64
+
+	latch map[uint32]byte
 	io    map[uint64]*IOAccess
 	order []*IOAccess
 }
 
 func NewBus(ramSize int) *Bus {
-	return &Bus{RAM: make([]byte, ramSize), io: map[uint64]*IOAccess{}}
+	return &Bus{
+		RAM:   make([]byte, ramSize),
+		GVRAM: make([]byte, GVRAMSize),
+		TVRAM: make([]byte, TVRAMSize),
+		CRTC:  NewCRTC(),
+		latch: map[uint32]byte{},
+		io:    map[uint64]*IOAccess{},
+	}
+}
+
+// resolve 把位址對到一塊真的記憶體。VRAM 是記憶體，暫存器不是。
+// mainRAM 為真時不記帳——記帳是給「主記憶體以外」的報告用的。
+func (b *Bus) resolve(addr uint32, size uint32) (mem []byte, off uint32, mainRAM, ok bool) {
+	switch {
+	case addr+size <= uint32(len(b.RAM)):
+		return b.RAM, addr, true, true
+	case addr >= GVRAMBase && addr+size <= GVRAMBase+GVRAMSize:
+		return b.GVRAM, addr - GVRAMBase, false, true
+	case addr >= TVRAMBase && addr+size <= TVRAMBase+TVRAMSize:
+		return b.TVRAM, addr - TVRAMBase, false, true
+	}
+	return nil, 0, false, false
 }
 
 // IO 回傳所有記到的 I/O 存取，依第一次出現的順序。
@@ -120,14 +171,37 @@ func (b *Bus) note(addr uint32, write bool, size int) {
 	b.order = append(b.order, a)
 }
 
-func (b *Bus) inRAM(addr uint32) bool { return int(addr) < len(b.RAM) }
+// stop 回傳「這個位址是不是被 -stop-io 指名的」。
+func (b *Bus) stop(addr uint32) error {
+	if b.StopOn[addr] {
+		return fmt.Errorf("x68k: 碰到指名的 I/O 位址 0x%06X（%s，PC=0x%06X）",
+			addr, Classify(addr), b.PC)
+	}
+	return nil
+}
 
 func (b *Bus) ReadByte(address uint32, _ uint8) (byte, error) {
 	a := address & 0x00FFFFFF
-	if b.inRAM(a) {
-		return b.RAM[a], nil
+	if a == crtcOpPort && b.CRTC != nil {
+		b.note(a, false, 1)
+		if err := b.stop(a); err != nil {
+			return 0, err
+		}
+		return b.CRTC.Read(b.Cycles), nil
+	}
+	if mem, off, mainRAM, ok := b.resolve(a, 1); ok {
+		if !mainRAM {
+			b.note(a, false, 1)
+		}
+		return mem[off], nil
 	}
 	b.note(a, false, 1)
+	if err := b.stop(a); err != nil {
+		return 0, err
+	}
+	if b.LatchIO {
+		return b.latch[a], nil
+	}
 	if b.StrictIO {
 		return 0, fmt.Errorf("x68k: 讀 %s 0x%06X（PC=0x%06X）尚未實作", Classify(a), a, b.PC)
 	}
@@ -139,10 +213,19 @@ func (b *Bus) ReadWord(address uint32, _ uint8) (uint16, error) {
 	if a&1 != 0 {
 		return 0, fmt.Errorf("x68k: 奇數位址讀字 0x%06X（PC=0x%06X）", a, b.PC)
 	}
-	if b.inRAM(a) && b.inRAM(a+1) {
-		return uint16(b.RAM[a])<<8 | uint16(b.RAM[a+1]), nil
+	if mem, off, mainRAM, ok := b.resolve(a, 2); ok {
+		if !mainRAM {
+			b.note(a, false, 2)
+		}
+		return uint16(mem[off])<<8 | uint16(mem[off+1]), nil
 	}
 	b.note(a, false, 2)
+	if err := b.stop(a); err != nil {
+		return 0, err
+	}
+	if b.LatchIO {
+		return uint16(b.latch[a])<<8 | uint16(b.latch[a+1]), nil
+	}
 	if b.StrictIO {
 		return 0, fmt.Errorf("x68k: 讀 %s 0x%06X（PC=0x%06X）尚未實作", Classify(a), a, b.PC)
 	}
@@ -151,11 +234,29 @@ func (b *Bus) ReadWord(address uint32, _ uint8) (uint16, error) {
 
 func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 	a := address & 0x00FFFFFF
-	if b.inRAM(a) {
-		b.RAM[a] = value
+	if a == crtcOpPort && b.CRTC != nil {
+		b.note(a, true, 1)
+		if err := b.stop(a); err != nil {
+			return err
+		}
+		b.CRTC.Write(b.Cycles, value)
+		return nil
+	}
+	if mem, off, mainRAM, ok := b.resolve(a, 1); ok {
+		if !mainRAM {
+			b.note(a, true, 1)
+		}
+		mem[off] = value
 		return nil
 	}
 	b.note(a, true, 1)
+	if err := b.stop(a); err != nil {
+		return err
+	}
+	if b.LatchIO {
+		b.latch[a] = value
+		return nil
+	}
 	if b.StrictIO {
 		return fmt.Errorf("x68k: 寫 %s 0x%06X（PC=0x%06X）尚未實作", Classify(a), a, b.PC)
 	}
@@ -167,12 +268,23 @@ func (b *Bus) WriteWord(address uint32, value uint16, _ uint8) error {
 	if a&1 != 0 {
 		return fmt.Errorf("x68k: 奇數位址寫字 0x%06X（PC=0x%06X）", a, b.PC)
 	}
-	if b.inRAM(a) && b.inRAM(a+1) {
-		b.RAM[a] = byte(value >> 8)
-		b.RAM[a+1] = byte(value)
+	if mem, off, mainRAM, ok := b.resolve(a, 2); ok {
+		if !mainRAM {
+			b.note(a, true, 2)
+		}
+		mem[off] = byte(value >> 8)
+		mem[off+1] = byte(value)
 		return nil
 	}
 	b.note(a, true, 2)
+	if err := b.stop(a); err != nil {
+		return err
+	}
+	if b.LatchIO {
+		b.latch[a] = byte(value >> 8)
+		b.latch[a+1] = byte(value)
+		return nil
+	}
 	if b.StrictIO {
 		return fmt.Errorf("x68k: 寫 %s 0x%06X（PC=0x%06X）尚未實作", Classify(a), a, b.PC)
 	}

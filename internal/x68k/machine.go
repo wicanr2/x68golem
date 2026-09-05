@@ -16,6 +16,9 @@ import (
 // 68000 是 prefetch 機器，自己動 PC 就要自己補 prefetch，很容易補錯而且
 // 錯了不會報錯。走真正的例外流程，prefetch 由 CPU 自己處理，我們只負責
 // 在樁位址上把服務做完再 RTE——這也正是 Human68k 實際的機制。
+// supervisorStack 是留給 supervisor 堆疊的空間，程式拿不到。
+const supervisorStack = 0x400
+
 const (
 	dosStub  = 0x1F0000
 	iocsStub = 0x1F0010
@@ -55,21 +58,32 @@ type Machine struct {
 	// （走進正常情況不會進的錯誤處理）。預設是 false。
 	LenientServices bool
 
+	// Process 是交棒給程式的那一組東西（A0–A3 指到的地方）。
+	Process *human68k.Process
+
+	// Vectors 是程式用 _INTVCS 換掉的 Human68k 向量。
+	Vectors map[uint16]uint32
+
 	services map[string]*Service
 	order    []*Service
 	steps    uint64
+	cycles   uint64
 
 	// trace 是最近 N 道指令的環狀緩衝（PC ＋ 指令字）。
 	// 停在一個沒實作的服務上時，「它是怎麼走到這裡的」比什麼都重要。
+	current  *Service
 	trace    []TracePoint
 	traceCap int
 	traceN   int
 }
 
 // TracePoint 是軌跡上的一點。
+//
+// 只記指令字不夠用：`lea (d16,a0),a5` 的重點是那個 d16，而它在延伸字裡。
+// 所以連後面兩個字一起記——不做反組譯，但把判讀需要的 bytes 留下來。
 type TracePoint struct {
-	PC     uint32
-	Opcode uint16
+	PC    uint32
+	Words [3]uint16
 }
 
 // NewMachine 建一台機器並把 image 載進去。
@@ -93,10 +107,29 @@ func NewMachine(im *human68k.Image, ramSize int) (*Machine, error) {
 	}
 	m.installVectors()
 
+	// Human68k 交棒契約：A0 指向記憶體管理標頭（＝載入基底 − 0x100），
+	// A1 是記憶體結束，A2 是命令列，A3 是環境（internal/human68k/process.go）。
+	if im.Base < human68k.ProcessBlockSize {
+		return nil, fmt.Errorf("x68k: 載入基底 0x%X 太低，塞不下程式管理區塊", im.Base)
+	}
+	proc := &human68k.Process{
+		BlockAddr:  im.Base - human68k.ProcessBlockSize,
+		ProgramEnd: im.BSSEnd(),
+		BlockEnd:   uint32(ramSize) - supervisorStack,
+		Path:       "A:\\",
+		Name:       "SANMAIN.Z",
+	}
+	a0, a1, a2, a3 := proc.Layout(bus.RAM)
+	m.Process = proc
+
 	// Human68k 的使用者程式在 user mode 起跑；crt0 自己會設 sp
 	// （SANMAIN.Z 的第一件事就是 `lea ($8B468).l,sp`）。
-	sup := uint32(ramSize - 0x100)
-	m.CPU.State = m68k.State{SR: 0x0000, USP: im.BSSEnd() + 0x100, SSP: sup}
+	m.CPU.State = m68k.State{SR: 0x0000, USP: im.BSSEnd() + 0x100,
+		SSP: uint32(ramSize) - 0x100}
+	m.CPU.State.A[0] = a0
+	m.CPU.State.A[1] = a1
+	m.CPU.State.A[2] = a2
+	m.CPU.State.A[3] = a3
 	if err := m.resume(im.Entry); err != nil {
 		return nil, err
 	}
@@ -132,6 +165,14 @@ func (m *Machine) resume(pc uint32) error {
 	return nil
 }
 
+// MarkStubbed 讓服務實作自己承認「我只是回 0 混過去」，
+// 報告會把它標出來。給探路用的樁呼叫。
+func (m *Machine) MarkStubbed() {
+	if m.current != nil {
+		m.current.Stubbed = true
+	}
+}
+
 // SetTraceDepth 打開指令軌跡（0 表示關掉）。
 func (m *Machine) SetTraceDepth(n int) {
 	m.traceCap = n
@@ -156,6 +197,10 @@ func (m *Machine) Trace() []TracePoint {
 
 // Steps 是已經執行的指令數。
 func (m *Machine) Steps() uint64 { return m.steps }
+
+// Cycles 是累計的 CPU 週期數。這是機器裡**唯一**的時間來源
+// （docs/spec/002 §3：不讀主機時鐘）。
+func (m *Machine) Cycles() uint64 { return m.cycles }
 
 // Services 回傳所有碰到的服務呼叫，依第一次出現的順序。
 func (m *Machine) Services() []*Service { return m.order }
@@ -192,12 +237,21 @@ func (m *Machine) Step() error {
 	}
 	m.Bus.PC = m.CPU.State.PC - 4
 	if m.traceCap > 0 {
-		m.trace[m.traceN%m.traceCap] = TracePoint{PC: m.Bus.PC, Opcode: m.CPU.State.Prefetch[0]}
+		tp := TracePoint{PC: m.Bus.PC}
+		tp.Words[0] = m.CPU.State.Prefetch[0]
+		tp.Words[1] = m.CPU.State.Prefetch[1]
+		if w, err := m.Bus.ReadWord(m.Bus.PC+4, 6); err == nil {
+			tp.Words[2] = w
+		}
+		m.trace[m.traceN%m.traceCap] = tp
 		m.traceN++
 	}
-	if _, err := m.CPU.Step(); err != nil {
+	res, err := m.CPU.Step()
+	if err != nil {
 		return fmt.Errorf("PC=0x%06X：%w", m.Bus.PC, err)
 	}
+	m.cycles += uint64(res.Clocks)
+	m.Bus.Cycles = m.cycles
 	m.steps++
 	return nil
 }
@@ -249,6 +303,7 @@ func (m *Machine) serviceDOS() error {
 	}
 	num := op & 0x00FF
 	s := m.note("DOS call", num, human68k.DOSCallName(op), pc)
+	m.current = s
 	fn, ok := m.DOSCalls[num]
 	if !ok {
 		if !m.LenientServices {
@@ -272,6 +327,7 @@ func (m *Machine) serviceIOCS() error {
 	// trap 堆的是「下一道指令的位址」，直接回去就好。
 	num := uint16(m.CPU.State.D[0] & 0xFF)
 	s := m.note("IOCS", num, "", pc-2)
+	m.current = s
 	fn, ok := m.IOCSCalls[num]
 	if !ok {
 		if !m.LenientServices {

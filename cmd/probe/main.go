@@ -17,10 +17,43 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/wicanr2/x68golem/internal/human68k"
 	"github.com/wicanr2/x68golem/internal/x68k"
 )
+
+// installStubs 把 -stub 指定的服務接成「回 0」。
+//
+// 它與 -lenient 的差別是**指名**：報告裡照樣會標成回 0 混過去，
+// 但沒被指名的服務仍然會讓執行停下來。探一段路而不弄髒其他結論。
+func installStubs(m *x68k.Machine, spec string) error {
+	if spec == "" {
+		return nil
+	}
+	for _, item := range strings.Split(spec, ",") {
+		item = strings.TrimSpace(item)
+		kind, num, ok := strings.Cut(item, ":")
+		if !ok {
+			return fmt.Errorf("-stub 的格式是 dos:44 或 iocs:0E，看不懂 %q", item)
+		}
+		n, err := strconv.ParseUint(strings.TrimPrefix(num, "$"), 16, 16)
+		if err != nil {
+			return fmt.Errorf("-stub %q 的呼叫號不是十六進位數：%v", item, err)
+		}
+		fn := func(mm *x68k.Machine) error { mm.SetResult(0); mm.MarkStubbed(); return nil }
+		switch strings.ToLower(kind) {
+		case "dos":
+			m.DOSCalls[uint16(n)] = fn
+		case "iocs":
+			m.IOCSCalls[uint16(n)] = fn
+		default:
+			return fmt.Errorf("-stub 的種類只有 dos 與 iocs，看不懂 %q", kind)
+		}
+	}
+	return nil
+}
 
 func main() {
 	var (
@@ -28,6 +61,16 @@ func main() {
 		maxSteps = flag.Uint64("steps", 50_000_000, "最多執行幾道指令")
 		ram      = flag.Int("ram", x68k.DefaultRAMSize, "主記憶體大小（bytes）")
 		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
+		latch = flag.Bool("latch-io", false,
+			"把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。"+
+				"讓「寫了自己再讀回來確認」的等待迴圈走得完；不是模擬硬體")
+		stopIO = flag.String("stop-io", "",
+			"碰到這些 I/O 位址就停（十六進位，逗號分隔）。停下來時軌跡還在，"+
+				"用來回答「它是怎麼走到這個暫存器的」")
+		stub  = flag.String("stub", "",
+			"指名要「回 0 混過去」的服務，例如 dos:44,iocs:0E。"+
+				"這是探路用的：想看某個服務之後的程式碼長什麼樣，但又不想像 "+
+				"-lenient 那樣把整份報告變成不可信")
 		lenient = flag.Bool("lenient", false,
 			"沒實作的 I/O 與服務一律回 0 繼續跑（產出只能當線索，不能當事實）")
 	)
@@ -56,6 +99,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	m.InstallDOSCalls()
+	if err := installStubs(m, *stub); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if *stopIO != "" {
+		m.Bus.StopOn = map[uint32]bool{}
+		for _, item := range strings.Split(*stopIO, ",") {
+			v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(item), "0x"), 16, 32)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "-stop-io %q 不是十六進位位址\n", item)
+				os.Exit(2)
+			}
+			m.Bus.StopOn[uint32(v)] = true
+		}
+	}
+	m.Bus.LatchIO = *latch
 	m.Bus.StrictIO = !*lenient
 	m.LenientServices = *lenient
 	m.SetTraceDepth(*trace)
@@ -84,7 +144,7 @@ func main() {
 	if tp := m.Trace(); len(tp) > 0 {
 		fmt.Printf("\n== 停下來之前的最後 %d 道指令\n", len(tp))
 		for _, t := range tp {
-			fmt.Printf("  0x%06X  %04X\n", t.PC, t.Opcode)
+			fmt.Printf("  0x%06X  %04X %04X %04X\n", t.PC, t.Words[0], t.Words[1], t.Words[2])
 		}
 		st := m.CPU.State
 		fmt.Println("== 暫存器")
