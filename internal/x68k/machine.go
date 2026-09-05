@@ -61,6 +61,10 @@ type Machine struct {
 	// Process 是交棒給程式的那一組東西（A0–A3 指到的地方）。
 	Process *human68k.Process
 
+	// FloatCalls 是 FLOAT2.X 那一段（$FE00–$FEFF）；RNG 是受控的亂數來源。
+	FloatCalls map[uint16]func(*Machine) error
+	RNG        *RNG
+
 	// Vectors 是程式用 _INTVCS 換掉的 Human68k 向量。
 	Vectors map[uint16]uint32
 
@@ -330,7 +334,9 @@ func (m *Machine) serviceDOS() error {
 	s := m.note(kind, num, human68k.DOSCallName(op), pc)
 	m.current = s
 	fn, ok := m.DOSCalls[num]
-	if kind != "DOS call" {
+	if kind == "FLOAT2" {
+		fn, ok = m.FloatCalls[num]
+	} else if kind != "DOS call" {
 		ok = false
 	}
 	if !ok {
