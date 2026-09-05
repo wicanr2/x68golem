@@ -1,5 +1,7 @@
 package x68k
 
+import "fmt"
+
 // HD63450 DMAC——只做「開始傳送 → 立刻完成 → 發中斷」。
 //
 // 為什麼需要它：《三國志》開機到一半會停在
@@ -88,6 +90,16 @@ func (m *Machine) dmacWrite(addr uint32, v byte) (irqVector byte, fire bool) {
 	}
 	// 開始位元被設起來：**先把資料搬完**，再排定完成時間。
 	count := uint64(m.Bus.latch[base+dmacMTC])<<8 | uint64(m.Bus.latch[base+dmacMTC+1])
+	if len(m.DMACLog) < 64 {
+		get32 := func(off uint32) uint32 {
+			return uint32(m.Bus.latch[base+off])<<24 | uint32(m.Bus.latch[base+off+1])<<16 |
+				uint32(m.Bus.latch[base+off+2])<<8 | uint32(m.Bus.latch[base+off+3])
+		}
+		m.DMACLog = append(m.DMACLog, fmt.Sprintf(
+			"通道 %d：OCR=%02X SCR=%02X DCR=%02X MTC=%d MAR=0x%06X DAR=0x%06X（PC=0x%06X）",
+			ch, m.Bus.latch[base+dmacOCR], m.Bus.latch[base+dmacSCR], m.Bus.latch[base+0x04],
+			count, get32(dmacMAR), get32(dmacDAR), m.Bus.PC))
+	}
 	if err := m.dmacTransfer(base, count); err != nil {
 		m.dmacErr = err
 	}

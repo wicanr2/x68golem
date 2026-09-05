@@ -23,16 +23,16 @@ const (
 	dosStub  = 0x1F0000
 	iocsStub = 0x1F0010
 
-	vectorLineF = 11        // F-line 模擬器例外
-	vectorTrap15 = 32 + 15  // trap #15 ＝ IOCS
+	vectorLineF  = 11      // F-line 模擬器例外
+	vectorTrap15 = 32 + 15 // trap #15 ＝ IOCS
 )
 
 // Service 是一次服務呼叫的紀錄。
 type Service struct {
-	Kind   string // "DOS call" 或 "IOCS"
-	Number uint16
-	Name   string
-	Count  int
+	Kind    string // "DOS call" 或 "IOCS"
+	Number  uint16
+	Name    string
+	Count   int
 	FirstPC uint32
 	// Stubbed 表示這個服務至少被「回 0 混過去」一次（LenientServices）。
 	Stubbed bool
@@ -47,7 +47,7 @@ type Machine struct {
 	Bus *Bus
 
 	// DOSCalls／IOCS 是已實作的服務。沒登記的呼叫號會被記下來並停止執行。
-	DOSCalls map[uint16]func(*Machine) error
+	DOSCalls  map[uint16]func(*Machine) error
 	IOCSCalls map[uint16]func(*Machine) error
 
 	// LenientServices 為真時，沒登記的服務回 D0=0 繼續跑，只記帳不停下。
@@ -94,6 +94,16 @@ type Machine struct {
 	// VPage 是 _VPAGE 設的圖形顯示頁；PaintPixels 是 _PAINT 塗過幾個像素。
 	VPage       byte
 	PaintPixels int
+	// PaintLog 記下每一次 _PAINT 的參數與塗了幾個像素（最多留 200 筆）。
+	// _PAINT 的語意還沒對過 MAME（`internal/x68k/paint.go`），
+	// 要判斷它是不是把畫面洗掉的兇手，就得看得到它做了什麼。
+	PaintLog []string
+	// paintSegments／paintMaxDepth 記最後一次 _PAINT 用掉多少掃描線段與堆疊深度。
+	// 真機的作業區有上限，這兩個數字是用來判斷「是不是被上限擋掉」的依據。
+	paintSegments int
+	paintMaxDepth int
+	// DMACLog 記下每一次 DMA 啟動時的暫存器（最多 64 筆）。
+	DMACLog   []string
 	ScreenUse map[byte]byte
 
 	services map[string]*Service

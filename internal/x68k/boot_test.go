@@ -90,6 +90,56 @@ func TestBootToTitle(t *testing.T) {
 	}
 
 	compareWithMAME(t, m.Bus.TVRAM[:0x20000])
+	compareGraphicsWithMAME(t, m.Bus.GVRAM[:0x80000])
+}
+
+// compareGraphicsWithMAME 把圖形平面與 MAME 在同一個畫面 dump 的那一份逐位元組比。
+//
+//	X68GOLEM_TEST_MAME_GVRAM  MAME 的 dump（512 KB，同一支 dump-tvram.lua 產生）
+//
+// 這裡**不留任何容差**。文字平面要放過游標的閃爍相位，圖形平面沒有那種東西：
+// 畫面是靜止的，一個 byte 不同就是畫錯了。
+//
+// 兩件事要成立這一比才過得了（都是量出來的，不是查表）：
+//
+//   - 256 色模式下第 0 頁的 word 只有低 byte 是真的記憶體（`internal/x68k/bus.go`
+//     的 GraphicsBPP，`docs/findings/020`）。
+//   - 換畫面時的清除是 CRTC 的高速クリア，不是 CPU 迴圈（`docs/findings/022`）。
+func compareGraphicsWithMAME(t *testing.T, ours []byte) {
+	t.Helper()
+	ref := os.Getenv("X68GOLEM_TEST_MAME_GVRAM")
+	if ref == "" {
+		t.Log("X68GOLEM_TEST_MAME_GVRAM 沒設，跳過圖形平面與 MAME 的逐位元組比對")
+		return
+	}
+	want, err := os.ReadFile(ref)
+	if err != nil {
+		t.Skipf("讀不到 %s：%v", ref, err)
+	}
+	if len(want) != len(ours) {
+		t.Fatalf("MAME 的 dump 是 %d bytes，我們的是 %d", len(want), len(ours))
+	}
+	diffs, first := 0, -1
+	for i := range ours {
+		if ours[i] != want[i] {
+			diffs++
+			if first < 0 {
+				first = i
+			}
+		}
+	}
+	if diffs != 0 {
+		px := first / 2
+		t.Fatalf("圖形平面與 MAME 有 %d bytes 不同，第一筆在 (%d,%d)：我們 0x%02X，MAME 0x%02X",
+			diffs, px%512, px/512, ours[first], want[first])
+	}
+	nz := 0
+	for i := 1; i < len(ours); i += 2 {
+		if ours[i] != 0 {
+			nz++
+		}
+	}
+	t.Logf("圖形平面與 MAME 逐位元組相同（%d 個非 0 像素）", nz)
 }
 
 // compareWithMAME 把我們的 text VRAM 平面 0 與 MAME 在同一個畫面 dump 的

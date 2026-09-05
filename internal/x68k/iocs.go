@@ -34,7 +34,7 @@ func iocsNoop(m *Machine) error {
 }
 
 // iocsTvctrl 是 `$0C _TVCTRL`（d1.l 控制碼）：控制送給螢幕的訊號
-//（同步、顯示開關那一類）。我們沒有真的螢幕電路，記下來就好。
+// （同步、顯示開關那一類）。我們沒有真的螢幕電路，記下來就好。
 func iocsTvctrl(m *Machine) error {
 	m.TVControl = append(m.TVControl, m.CPU.State.D[1])
 	m.SetResult(0)
@@ -60,9 +60,26 @@ func iocsCrtmod(m *Machine) error {
 	old := uint32(m.CRTMode)
 	if mode != 0xFFFF {
 		m.CRTMode = mode
+		m.Bus.GraphicsBPP = GraphicsBPPForMode(mode)
 	}
 	m.SetResult(old)
 	return nil
+}
+
+// GraphicsBPPForMode 說一個 _CRTMOD 模式下，圖形第 0 頁一個像素佔幾個 bit。
+//
+// **這張表只放量過的模式**，沒量過的回 0（＝不知道，不做遮罩）。
+// 手冊上的模式表有好幾個版本互相矛盾，所以這裡不抄表：
+//
+//	模式 8：《三國志》唯一呼叫過的模式。在 MAME 上讀視訊控制器 R0
+//	（0xE82400）＝ 0x0001 ＝ **256 色**，同一刻第 0 頁的高 byte 全 0、
+//	第 1 頁（0xC80000）也全 0（`docs/findings/020`）。
+func GraphicsBPPForMode(mode uint16) int {
+	switch mode {
+	case 8:
+		return 8
+	}
+	return 0
 }
 
 // iocsGClrOn 是 `$90 _G_CLR_ON`：清掉並開啟圖形畫面。

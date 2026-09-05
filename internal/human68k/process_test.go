@@ -45,7 +45,16 @@ func TestProcessLayout(t *testing.T) {
 	if ram[a2] != 0 || ram[a2+1] != 0 {
 		t.Errorf("空命令列的長度 byte 與結尾都該是 0")
 	}
-	if a3 <= a0 || a3 >= a0+0x80 {
-		t.Errorf("環境 0x%X 應該落在空隙裡", a3)
+	// 環境區塊要在管理區塊外面，而且開頭那個 long 是**配置的總長度**。
+	// crt0 把它加進堆積游標（`docs/findings/019`）——給 0 的話堆積整批
+	// 往下移 0x200 bytes，之後每一份載入的資料都落在錯的位址。
+	if a3+DefaultEnvSize != a0 {
+		t.Errorf("環境 0x%X 應該剛好接在管理區塊下面", a3)
+	}
+	if got := binary.BigEndian.Uint32(ram[a3:]); got != DefaultEnvSize {
+		t.Errorf("環境區塊開頭的長度 = 0x%X，應該是 0x%X", got, DefaultEnvSize)
+	}
+	if ram[a3+4] != 0 {
+		t.Errorf("空環境的第一個字串位元組應該是 0")
 	}
 }

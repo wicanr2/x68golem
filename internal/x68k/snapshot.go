@@ -148,6 +148,7 @@ func (m *Machine) Restore(s *Snapshot) {
 	m.dmacPending, m.dmacVector, m.dmacDoneAt = s.dmacPending, s.dmacVector, s.dmacDoneAt
 	m.systemSSP = s.systemSSP
 	m.CRTMode, m.VPage = s.crtMode, s.vpage
+	m.Bus.GraphicsBPP = GraphicsBPPForMode(s.crtMode)
 	m.ScreenUse = map[byte]byte{}
 	for k, v := range s.screenUse {
 		m.ScreenUse[k] = v

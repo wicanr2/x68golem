@@ -45,12 +45,23 @@ const (
 	//
 	// 先前這兩個欄位標 L3、兩個都填了「區塊結束位址」，堆積因此整批位移
 	// 168 bytes，畫地圖的迴圈讀到界外的 0（`docs/findings/017`）。
-	pbDataEnd = 0x30 // data 段結束（＝ bss 起點）
+	pbDataEnd  = 0x30 // data 段結束（＝ bss 起點）
 	pbDataEnd2 = 0x34 // 同上，crt0 兩個都讀
-	pbBSSEnd  = 0x38 // bss 結束
-	pbPath    = 0x80 // 執行檔路徑（null 結尾）
-	pbName    = 0xC4 // 執行檔檔名（null 結尾）
+	pbBSSEnd   = 0x38 // bss 結束
+	pbPath     = 0x80 // 執行檔路徑（null 結尾）
+	pbName     = 0xC4 // 執行檔檔名（null 結尾）
 )
+
+// DefaultEnvSize 是 Human68k 交給程式的環境區塊長度。
+//
+// 環境區塊的格式是「long 總長度 ＋ 一串 null 結尾的 `NAME=VALUE` ＋ 一個 null」，
+// **那個 long 是配置的總長度，不是已用的長度**。COMMAND.X 預設配 512 bytes，
+// 在 MAME 上量到的真機值就是 `0x200`（`docs/findings/019`）。
+//
+// 這個值會直接進到程式的堆積起點：crt0 讀環境區塊的第一個 long，
+// 加 5、向下對齊到偶數之後累加進配置器的游標（`0x06E762`–`0x06E774`）。
+// 給 0 的話堆積整批往下移 0x200 bytes，之後每一份載入的資料都落在錯的位址。
+const DefaultEnvSize = 0x200
 
 // Process 描述要交給程式的那一組東西。
 type Process struct {
@@ -69,7 +80,11 @@ type Process struct {
 	Path     string
 	Name     string
 	CmdLine  string
-	Env      string
+	// EnvAddr 是環境區塊的位址（＝ A3）。0 表示放在管理區塊下面。
+	EnvAddr uint32
+	// EnvSize 是環境區塊的總長度，會寫進區塊開頭的 long。
+	// 0 表示用 DefaultEnvSize。
+	EnvSize uint32
 }
 
 // Layout 把 Process 寫進記憶體，回傳進入時的 A0–A3。
@@ -101,8 +116,20 @@ func (p *Process) Layout(ram []byte) (a0, a1, a2, a3 uint32) {
 	copy(ram[cmd+1:], p.CmdLine)
 	ram[cmd+1+uint32(len(p.CmdLine))] = 0
 
-	env := p.BlockAddr + 0x60
-	ram[env] = 0
+	// 環境區塊要有真正的 512 bytes：crt0 把開頭那個 long 當成要跳過的長度，
+	// 而它自己的堆積游標就是從那裡往上長的。
+	size := p.EnvSize
+	if size == 0 {
+		size = DefaultEnvSize
+	}
+	env := p.EnvAddr
+	if env == 0 {
+		env = p.BlockAddr - size
+	}
+	for i := uint32(0); i < size; i++ {
+		ram[env+i] = 0
+	}
+	binary.BigEndian.PutUint32(ram[env:], size)
 
 	return p.BlockAddr, p.ProgramEnd, cmd, env
 }

@@ -9,8 +9,13 @@ import "fmt"
 const (
 	GVRAMBase = 0xC00000
 	GVRAMSize = 0x200000 // 2 MB
-	TVRAMBase = 0xE00000
-	TVRAMSize = 0x080000 // 512 KB＝四個平面各 128 KB
+
+	// GVRAMPage0Size 是 256 色模式下第 0 頁佔的位址範圍：
+	// 512×512 個像素、一個像素一個 word ＝ 512 KB（0xC00000–0xC7FFFF）。
+	// 第 1 頁接在 0xC80000。
+	GVRAMPage0Size = 0x080000
+	TVRAMBase      = 0xE00000
+	TVRAMSize      = 0x080000 // 512 KB＝四個平面各 128 KB
 
 	// CGROM：字模。**使用者自備，本專案不內嵌**——那是 Sharp 的
 	// （`docs/spec/001`）。沒掛就讀到 0，字會是空白的。
@@ -108,13 +113,25 @@ type IOAccess struct {
 // 就回錯誤讓執行停下；為假時回 0／吞掉寫入，但仍然記帳——後者只給 probe 用，
 // 而且 probe 會在報告裡講明「這一刻之後的紀錄不可信」。
 type Bus struct {
-	RAM      []byte
-	GVRAM    []byte
-	TVRAM    []byte
-	Palette  []byte
+	RAM     []byte
+	GVRAM   []byte
+	TVRAM   []byte
+	Palette []byte
 	// CGROM 掛上去之後 0xF00000 起變成唯讀的真記憶體。
-	CGROM []byte
+	CGROM    []byte
 	StrictIO bool
+
+	// GraphicsBPP 是一個圖形像素在第 0 頁裡佔幾個 bit。
+	//
+	// **8 的時候，第 0 頁的 word 只有低 byte 是真的記憶體**：高 byte 屬於
+	// 第 1 頁（0xC80000），從第 0 頁的位址寫進去會被硬體丟掉、讀回來是 0。
+	// 這不是細節——《三國志》畫圖的迴圈是 `move.w d0,(a2)+`，而 d0 的
+	// 高位留著 `_B_SUPER` 的回傳值，所以每一個 word 都帶著 0xC7／0xC8。
+	// 不丟掉的話，整個平面會填滿那個值，而真機上第 1 頁是全 0
+	// （`docs/findings/020`）。
+	//
+	// 0 表示還不知道（沒有人呼叫過 _CRTMOD），這時 word 存取原封不動。
+	GraphicsBPP int
 
 	// LatchIO：把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。
 	//
@@ -136,6 +153,10 @@ type Bus struct {
 	// OnRegisterWrite 讓上層攔一個位元組寫入（DMAC 那類有副作用的暫存器）。
 	// 回傳 true 表示已經處理掉了。
 	OnRegisterWrite func(addr uint32, v byte) bool
+
+	// OnIOWrite 是**純觀測**：每一次寫進「不是記憶體」的位址都會叫一次。
+	// 拿來回答「誰寫了這個暫存器、寫了什麼」，不改變任何行為。
+	OnIOWrite func(addr uint32, v byte)
 
 	// StopOn 裡的位址一被碰到就回錯誤讓執行停下。
 	// 用途是「我要看它是怎麼走到這個暫存器的」——停下來時軌跡還在。
@@ -164,14 +185,14 @@ type Bus struct {
 
 func NewBus(ramSize int) *Bus {
 	return &Bus{
-		RAM:   make([]byte, ramSize),
-		GVRAM: make([]byte, GVRAMSize),
-		TVRAM:   make([]byte, TVRAMSize),
-		Palette: make([]byte, PaletteSize),
-		CRTC:  NewCRTC(),
+		RAM:          make([]byte, ramSize),
+		GVRAM:        make([]byte, GVRAMSize),
+		TVRAM:        make([]byte, TVRAMSize),
+		Palette:      make([]byte, PaletteSize),
+		CRTC:         NewCRTC(),
 		latch:        map[uint32]byte{},
 		tvramChanged: map[uint32]bool{},
-		io:    map[uint64]*IOAccess{},
+		io:           map[uint64]*IOAccess{},
 	}
 }
 
@@ -191,6 +212,50 @@ func (b *Bus) resolve(addr uint32, size uint32) (mem []byte, off uint32, mainRAM
 		return b.CGROM, addr - CGROMBase, false, true
 	}
 	return nil, 0, false, false
+}
+
+// fastClearGraphics 是 CRTC 的**高速クリア**：把 R21 低 4 位選到的圖形頁
+// 整頁清成 0。硬體在一次垂直歸線裡做完，所以 CPU 那邊看不到任何寫入迴圈。
+//
+// 頁與位址的對應（X68000 把同一塊 VRAM 依色數對到不同的視窗）：
+//
+//   - 256 色：兩頁，第 0 頁在 0xC00000、第 1 頁在 0xC80000，
+//     一個像素一個 word 但只有低 byte 是真的。R21 的 bit0／bit1 都指第 0 頁，
+//     bit2／bit3 都指第 1 頁（16 色的四頁兩兩合成 256 色的一頁）。
+//   - 其他色數：**還沒量過**，先照「第 N 頁在 0xC00000 + N×0x80000」處理。
+//
+// 這是量出來的（`docs/findings/022`）：《三國志》在換畫面時呼叫
+// 0x070CEA 那支常式，它把頁遮罩寫進 R21 低位元組、對 0xE80481 設 bit 1，
+// 然後等那一位自己清掉。真機在兩個取樣點之間（16 ms 內）就把 512 KB
+// 清完了——CPU 迴圈做不到那麼快，所以清的人是硬體。
+func (b *Bus) fastClearGraphics() {
+	mask := b.latch[crtcR21Low] & 0x0F
+	if mask == 0 {
+		return
+	}
+	done := map[uint32]bool{}
+	for i := uint32(0); i < 4; i++ {
+		if mask&(1<<i) == 0 {
+			continue
+		}
+		page := i
+		if b.GraphicsBPP == 8 {
+			page = i / 2
+		}
+		off := page * GVRAMPage0Size
+		if done[off] || off+GVRAMPage0Size > uint32(len(b.GVRAM)) {
+			continue
+		}
+		done[off] = true
+		clear(b.GVRAM[off : off+GVRAMPage0Size])
+	}
+}
+
+// dropsGraphicsHighByte 回答「這個位址是 256 色模式下第 0 頁的高 byte 嗎」。
+// 是的話硬體收不到那一次寫入（那半個 word 在第 1 頁）。
+func (b *Bus) dropsGraphicsHighByte(a uint32) bool {
+	return b.GraphicsBPP == 8 &&
+		a >= GVRAMBase && a < GVRAMBase+GVRAMPage0Size && a&1 == 0
 }
 
 // TakeTVRAMChanges 回傳「上次呼叫之後有幾個 text VRAM 位址的值真的變了」，
@@ -288,6 +353,12 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 		if err := b.stop(a); err != nil {
 			return err
 		}
+		if b.OnIOWrite != nil {
+			b.OnIOWrite(a, value)
+		}
+		if value&crtcOpFastClear != 0 {
+			b.fastClearGraphics()
+		}
 		b.CRTC.Write(b.Cycles, value)
 		return nil
 	}
@@ -304,12 +375,18 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 		if b.Watch != nil && b.Watch[a] {
 			b.OnWatch(a, uint32(value), 1, b.PC)
 		}
+		if b.dropsGraphicsHighByte(a) {
+			return nil
+		}
 		mem[off] = value
 		return nil
 	}
 	b.note(a, true, 1)
 	if err := b.stop(a); err != nil {
 		return err
+	}
+	if b.OnIOWrite != nil {
+		b.OnIOWrite(a, value)
 	}
 	if b.OnRegisterWrite != nil && b.OnRegisterWrite(a, value) {
 		return nil
@@ -345,13 +422,19 @@ func (b *Bus) WriteWord(address uint32, value uint16, _ uint8) error {
 		if b.Watch != nil && (b.Watch[a] || b.Watch[a+1]) {
 			b.OnWatch(a, uint32(value), 2, b.PC)
 		}
-		mem[off] = byte(value >> 8)
+		if !b.dropsGraphicsHighByte(a) {
+			mem[off] = byte(value >> 8)
+		}
 		mem[off+1] = byte(value)
 		return nil
 	}
 	b.note(a, true, 2)
 	if err := b.stop(a); err != nil {
 		return err
+	}
+	if b.OnIOWrite != nil {
+		b.OnIOWrite(a, byte(value>>8))
+		b.OnIOWrite(a+1, byte(value))
 	}
 	if b.LatchIO {
 		b.latch[a] = byte(value >> 8)

@@ -1,6 +1,7 @@
 package x68k
 
-// CRTC 目前只做一件事：**高速クリア／ラスタコピー 的動作位元**。
+// CRTC 做兩件事：**動作位元的時序**，以及**高速クリア真的把頁清掉**
+// （清除本身在 `bus.go` 的 fastClearGraphics，因為那要碰 GVRAM）。
 //
 // 為什麼是這一位先做：SANMAIN.Z 開機途中有一段
 //
@@ -16,6 +17,8 @@ package x68k
 //
 // 推論等級：
 //
+//   - L0：bit 1 是**高速クリア**。呼叫它的常式（0x070CEA）收一個頁遮罩，
+//     把它攤進 R21 的低 4 位再設這一位（`docs/findings/022`）。
 //   - L2：這一位由程式設起、由硬體清掉。上面那兩個迴圈就是證據。
 //   - L3：**多久之後清掉**。真機是在下一次垂直歸線完成，我們現在用
 //     「一格畫面的週期數」近似。MAME 上以 60 Hz 取樣 5045 次，
@@ -29,12 +32,26 @@ type CRTC struct {
 	// X68000 的 CPU 是 10 MHz，垂直頻率約 55.46 Hz（標準 256 色模式）。
 	FrameCycles uint64
 
-	op        byte   // $E80481 的內容
-	clearAt   uint64 // 動作位元要在這個週期數之後清掉
-	pending   bool
+	op      byte   // $E80481 的內容
+	clearAt uint64 // 動作位元要在這個週期數之後清掉
+	pending bool
 }
 
-const crtcOpPort = 0xE80481
+const (
+	crtcOpPort = 0xE80481
+
+	// crtcOpFastClear 是動作埠的**高速クリア**位元。
+	//
+	// 這是從遊戲的程式碼讀出來的（L0，`docs/findings/022`）：0x070CEA 那支
+	// 常式收一個頁遮罩，把它攤進 R21 的低 4 位（bit0 → 0x03、bit1 → 0x0C），
+	// 然後 `ori.b #2,(a0)` 再等那一位自己清掉。收頁遮罩、清整頁——
+	// 那是高速クリア，不是ラスタコピー。
+	crtcOpFastClear = 0x02
+
+	// crtcR21Low 是 R21（メモリモードレジスタ）的低位元組，
+	// 高速クリア的頁遮罩就放在它的低 4 位。
+	crtcR21Low = 0xE8002B
+)
 
 // NewCRTC 用預設的一格畫面週期數建一個 CRTC。
 func NewCRTC() *CRTC {
