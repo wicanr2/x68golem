@@ -102,19 +102,26 @@ func (b *Bus) TextNonZero(w, h int) int {
 
 // ── 圖形平面 ─────────────────────────────────────────────────────────
 //
-// X68000 的 graphics VRAM 在 `0xC00000`。16 色模式下**一個 word 放四頁的
-// 同一個像素**：bit 0–3 是第 0 頁、4–7 第 1 頁、8–11 第 2 頁、12–15 第 3 頁。
-// 位址是 `0xC00000 + (y*512 + x) * 2`。
+// X68000 的 graphics VRAM 在 `0xC00000`，一個像素佔一個 word，
+// 位址是 `0xC00000 + (y*512 + x) * 2`。**word 裡放什麼由畫面模式決定**。
 //
-// ⚠ 這一段還**沒有對過 MAME**——遊戲目前還沒畫到圖形平面（graphics VRAM
-// 的寫入次數是 0），所以沒有東西可以比。版面取自 X68000 的公開規格，
-// 標成 L3；等開場動畫畫出來再驗（`docs/spec/003`）。
+// 《三國志》用 `_CRTMOD 8`，而那是 **256 色**——這是量出來的，不是查表：
+// 把 MAME 在指令畫面 dump 的 512 KB 攤開，
+//
+//   - 高 byte **永遠是 0**（一種值）；
+//   - 低 byte 有 55 種值，包含 255／191／128／113／105 這些大於 15 的。
+//
+// 所以一個像素是**低 byte 的 8-bit 調色盤索引**，不是「四頁各 4 bit」。
+// 第一版照 16 色四頁做，結果我們的第 2、3 頁各有 137,600 個非 0 像素而
+// MAME 是 0——那個對不上正是這一段被訂正的原因（`docs/findings/015`）。
 const (
 	graphicsWidth  = 512
 	graphicsHeight = 512
 )
 
-// GraphicsIndices 回傳某一頁的色號（0–15）。
+// GraphicsIndices 回傳 256 色的調色盤索引。
+//
+// page 參數留著是為了將來的 16 色四頁模式；256 色模式下它沒有作用。
 func (b *Bus) GraphicsIndices(page, w, h int) []byte {
 	if w > graphicsWidth {
 		w = graphicsWidth
@@ -122,7 +129,6 @@ func (b *Bus) GraphicsIndices(page, w, h int) []byte {
 	if h > graphicsHeight {
 		h = graphicsHeight
 	}
-	shift := uint(page&3) * 4
 	out := make([]byte, w*h)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -130,14 +136,13 @@ func (b *Bus) GraphicsIndices(page, w, h int) []byte {
 			if off+1 >= len(b.GVRAM) {
 				continue
 			}
-			v := uint16(b.GVRAM[off])<<8 | uint16(b.GVRAM[off+1])
-			out[y*w+x] = byte(v >> shift & 0x0F)
+			out[y*w+x] = b.GVRAM[off+1]
 		}
 	}
 	return out
 }
 
-// GraphicsNonZero 回傳某一頁有幾個像素不是色號 0。
+// GraphicsNonZero 回傳有幾個像素不是索引 0。
 func (b *Bus) GraphicsNonZero(page, w, h int) int {
 	n := 0
 	for _, v := range b.GraphicsIndices(page, w, h) {
@@ -148,17 +153,20 @@ func (b *Bus) GraphicsNonZero(page, w, h int) int {
 	return n
 }
 
-// GraphicsPalette 讀出 16 色的圖形調色盤（`0xE82000`，256 個 word 的前 16 個）。
-func (b *Bus) GraphicsPalette() [16]color.RGBA {
-	var pal [16]color.RGBA
-	for i := 0; i < 16; i++ {
+// GraphicsPalette 讀出 256 色的圖形調色盤（`0xE82000` 起 256 個 word）。
+func (b *Bus) GraphicsPalette() [256]color.RGBA {
+	var pal [256]color.RGBA
+	for i := 0; i < 256; i++ {
+		if i*2+1 >= len(b.Palette) {
+			break
+		}
 		v := uint16(b.Palette[i*2])<<8 | uint16(b.Palette[i*2+1])
 		pal[i] = x68Color(v)
 	}
 	return pal
 }
 
-// GraphicsImage 把某一頁畫成一張圖。
+// GraphicsImage 把圖形畫面畫成一張圖。
 func (b *Bus) GraphicsImage(page, w, h int) *image.RGBA {
 	pal := b.GraphicsPalette()
 	idx := b.GraphicsIndices(page, w, h)

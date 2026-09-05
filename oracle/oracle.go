@@ -202,6 +202,10 @@ func (o *Oracle) TextIndices(w, h int) []byte { return o.m.Bus.TextIndices(w, h)
 // 給與 MAME 的 dump 逐位元組比對用。
 func (o *Oracle) TextPlane() []byte { return o.m.Bus.TVRAM[:0x20000] }
 
+// GraphicsPlane 回傳 graphics VRAM 的原始 bytes（512 KB），
+// 給與 MAME 的 dump 逐位元組比對用。
+func (o *Oracle) GraphicsPlane() []byte { return o.m.Bus.GVRAM[:0x80000] }
+
 // OnCall 在 addr 上裝一個只看不改的攔截點。
 func (o *Oracle) OnCall(addr uint32, fn func(*x68k.Frame)) { o.m.InstallHook(addr, fn) }
 

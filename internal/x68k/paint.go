@@ -34,32 +34,21 @@ func iocsPaint(m *Machine) error {
 	if err != nil {
 		return err
 	}
-	page := int(m.VPage & 3)
-	fill := byte(col & 0x0F)
-	n := m.floodFill(page, int(int16(x)), int(int16(y)), fill)
+	// 256 色模式：調色盤碼是 8-bit，寫進 word 的低 byte（screen.go）。
+	fill := byte(col)
+	n := m.floodFill(int(int16(x)), int(int16(y)), fill)
 	m.PaintPixels += n
 	m.SetResult(0)
 	return nil
 }
 
 // floodFill 用掃描線填充；回傳塗了幾個像素。
-func (m *Machine) floodFill(page, x, y int, fill byte) int {
+func (m *Machine) floodFill(x, y int, fill byte) int {
 	if x < 0 || y < 0 || x >= graphicsWidth || y >= graphicsHeight {
 		return 0
 	}
-	get := func(x, y int) byte {
-		off := (y*graphicsWidth + x) * 2
-		v := uint16(m.Bus.GVRAM[off])<<8 | uint16(m.Bus.GVRAM[off+1])
-		return byte(v >> (uint(page) * 4) & 0x0F)
-	}
-	set := func(x, y int, c byte) {
-		off := (y*graphicsWidth + x) * 2
-		v := uint16(m.Bus.GVRAM[off])<<8 | uint16(m.Bus.GVRAM[off+1])
-		shift := uint(page) * 4
-		v = v&^(0x0F<<shift) | uint16(c)<<shift
-		m.Bus.GVRAM[off] = byte(v >> 8)
-		m.Bus.GVRAM[off+1] = byte(v)
-	}
+	get := func(x, y int) byte { return m.Bus.GVRAM[(y*graphicsWidth+x)*2+1] }
+	set := func(x, y int, c byte) { m.Bus.GVRAM[(y*graphicsWidth+x)*2+1] = c }
 	if get(x, y) == fill {
 		return 0
 	}

@@ -379,6 +379,8 @@ func main() {
 
 	fmt.Printf("執行 %d 道指令後停下（%d 週期，垂直同步 %d 次，DMA 完成 %d 次）\n",
 		m.Steps(), m.Cycles(), m.VDispCalls, m.DMACTransfers)
+	fmt.Printf("畫面模式：_CRTMOD %d、_VPAGE 0x%X、_PAINT 塗了 %d 個像素\n",
+		m.CRTMode, m.VPage, m.PaintPixels)
 	if stopErr != nil {
 		fmt.Printf("停下的原因：%v\n", stopErr)
 	} else {

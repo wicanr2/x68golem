@@ -15,6 +15,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/wicanr2/x68golem/oracle"
@@ -43,6 +44,7 @@ func main() {
 	busyOK := flag.Bool("busy-ok", false,
 		"畫面一直在動也照樣送鍵。**動畫畫面需要它**——能力值抽取那一頁的數字"+
 			"會一直跳（原版就是這樣），永遠不會「靜下來」")
+	watch := flag.String("watch", "", "監看這些位址的寫入（十六進位，逗號分隔）")
 	flag.Parse()
 	if *verbose {
 		oracle.ScreenWindowLog = func(w, n int) {
@@ -82,6 +84,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if *watch != "" {
+		b := o.Machine().Bus
+		b.Watch = map[uint32]bool{}
+		for _, item := range strings.Split(*watch, ",") {
+			v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(item), "0x"), 16, 32)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "-watch %q 不是十六進位位址\n", item)
+				os.Exit(2)
+			}
+			b.Watch[uint32(v)] = true
+		}
+		seen := 0
+		b.OnWatch = func(addr, v uint32, size int, pc uint32) {
+			if seen < 12 {
+				seen++
+				fmt.Printf("    監看 0x%06X ← 0x%0*X（%d bytes）PC=0x%06X\n", addr, size*2, v, size, pc)
+			}
+		}
+	}
 	keys := strings.NewReplacer(`\r`, "\r", `\n`, "\r", `\t`, "\t").Replace(*seq)
 
 	for i, r := range []byte(keys) {
@@ -110,6 +131,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	g := o.GraphicsPlane()
+	if err := os.WriteFile(filepath.Join(*out, "final-gvram.bin"), g, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	nz := 0
+	for _, b := range g {
+		if b != 0 {
+			nz++
+		}
+	}
+	fmt.Printf("graphics VRAM 非 0 bytes：%d／%d\n", nz, len(g))
 	fmt.Printf("跑完 %d 鍵，共 %d 道指令、%d 個週期\n", len(keys), o.Steps(), o.Cycles())
 }
 
