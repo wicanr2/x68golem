@@ -50,7 +50,7 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 |---|---|---|---|
 | M0 | 服務面普查（`cmd/probe`）| 跑一次列出「用到而未實作」的 DOS call／IOCS／硬體位址 | **完成**（`docs/findings/001`）|
 | M1 | 68000 核心 | SingleStepTests 全綠 | **完成**（240,168 筆）|
-| M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **進行中**（主迴圈已在跑；還缺 CGROM 與鍵盤）|
+| M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **進行中**（9 個 DOS call ＋ 30 個 IOCS ＋ FAT12 ＋ 軟碟 ＋ 精靈 ＋ DMAC ＋ 鍵盤；走過 2,622 個相異位址後原地打轉，`docs/findings/007`）|
 | M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | 未開始 |
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | 未開始 |
 | M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | 未開始 |

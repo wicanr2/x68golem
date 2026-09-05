@@ -353,7 +353,7 @@ func main() {
 		if len(list) > *hot {
 			list = list[:*hot]
 		}
-		fmt.Printf("\n== 執行次數最多的 %d 個位址\n", len(list))
+		fmt.Printf("\n== 走過 %d 個相異位址；執行次數最多的 %d 個\n", len(m.HotPC), len(list))
 		for _, e := range list {
 			fmt.Printf("  0x%06X  x%d\n", e.addr, e.n)
 		}
