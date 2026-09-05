@@ -155,6 +155,8 @@ func dosRead(m *Machine) error {
 		}
 	}
 	got := end - f.pos
+	m.Opens = append(m.Opens, fmt.Sprintf("  讀 %s：位置 %d 起 %d bytes（要 %d）",
+		f.name, f.pos, got, n))
 	f.pos = end
 	m.SetResult(uint32(got))
 	return nil

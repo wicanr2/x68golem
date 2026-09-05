@@ -12,6 +12,11 @@ const (
 	TVRAMBase = 0xE00000
 	TVRAMSize = 0x080000 // 512 KB＝四個平面各 128 KB
 
+	// CGROM：字模。**使用者自備，本專案不內嵌**——那是 Sharp 的
+	// （`docs/spec/001`）。沒掛就讀到 0，字會是空白的。
+	CGROMBase = 0xF00000
+	CGROMSize = 0x0C0000 // 768 KB
+
 	// 調色盤與視訊控制器：0xE82000 起。這一段是**讀得回來的暫存器檔**，
 	// 不是只寫的埠——畫面要重建就得讀它，所以用真的記憶體backing。
 	PaletteBase = 0xE82000
@@ -107,6 +112,8 @@ type Bus struct {
 	GVRAM    []byte
 	TVRAM    []byte
 	Palette  []byte
+	// CGROM 掛上去之後 0xF00000 起變成唯讀的真記憶體。
+	CGROM []byte
 	StrictIO bool
 
 	// LatchIO：把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。
@@ -168,6 +175,8 @@ func (b *Bus) resolve(addr uint32, size uint32) (mem []byte, off uint32, mainRAM
 		return b.TVRAM, addr - TVRAMBase, false, true
 	case addr >= PaletteBase && addr+size <= PaletteBase+PaletteSize:
 		return b.Palette, addr - PaletteBase, false, true
+	case b.CGROM != nil && addr >= CGROMBase && addr+size <= CGROMBase+uint32(len(b.CGROM)):
+		return b.CGROM, addr - CGROMBase, false, true
 	}
 	return nil, 0, false, false
 }

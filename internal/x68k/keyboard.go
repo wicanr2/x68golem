@@ -8,7 +8,22 @@ import "fmt"
 // 需要掃描碼的地方（方向鍵、功能鍵）等有實際用到再補，**不先編一份對照表**。
 type Keyboard struct {
 	queue []uint32
+
+	// Delay 是兩個按鍵之間至少要隔多少 CPU 週期。
+	//
+	// **這不是為了好看，是因為遊戲會量玩家等了多久。** 開機第二個畫面是
+	// 「乱数の初期化中です。少し待ってからリターンキーを押して下さい。」
+	// ——原版拿玩家按下 Return 之前的等待時間當亂數種子。一次把整串鍵倒進去，
+	// 等於零延遲，種子就固定了。
+	Delay  uint64
+	nextAt uint64
+	cycles uint64
 }
+
+// Tick 讓鍵盤知道現在是第幾個週期。
+func (k *Keyboard) Tick(cycles uint64) { k.cycles = cycles }
+
+func (k *Keyboard) ready() bool { return k.cycles >= k.nextAt }
 
 // Push 把一個鍵排進佇列。
 func (k *Keyboard) Push(v uint32) { k.queue = append(k.queue, v) }
@@ -22,7 +37,7 @@ func (k *Keyboard) PushString(s string) {
 
 // Peek 看一眼但不取走；空的回 0。
 func (k *Keyboard) Peek() uint32 {
-	if len(k.queue) == 0 {
+	if len(k.queue) == 0 || !k.ready() {
 		return 0
 	}
 	return k.queue[0]
@@ -30,11 +45,12 @@ func (k *Keyboard) Peek() uint32 {
 
 // Pop 取走一個；空的回 0。
 func (k *Keyboard) Pop() uint16 {
-	if len(k.queue) == 0 {
+	if len(k.queue) == 0 || !k.ready() {
 		return 0
 	}
 	v := k.queue[0]
 	k.queue = k.queue[1:]
+	k.nextAt = k.cycles + k.Delay
 	return uint16(v)
 }
 
@@ -46,6 +62,7 @@ func (m *Machine) InstallKeyboard() {
 	if m.Keys == nil {
 		m.Keys = &Keyboard{}
 	}
+	m.Keys.nextAt = m.Keys.Delay
 	m.IOCSCalls[0x00] = iocsKeyinp
 	m.IOCSCalls[0x01] = iocsKeysns
 }

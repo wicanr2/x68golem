@@ -332,6 +332,9 @@ func (m *Machine) Step() error {
 	}
 	m.cycles += uint64(res.Clocks)
 	m.Bus.Cycles = m.cycles
+	if m.Keys != nil {
+		m.Keys.Tick(m.cycles)
+	}
 	m.steps++
 	return nil
 }

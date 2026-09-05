@@ -149,8 +149,13 @@ func main() {
 			"掃映像裡的 $FE00–$FEFF（FLOAT2.X 的浮點呼叫）並列出號碼")
 		disks = flag.String("disks", "",
 			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
+		cgrom = flag.String("cgrom", "",
+			"CGROM 檔（字模，玩家自備；不掛的話字是空白的）")
+		keyDelay = flag.Uint64("key-delay", 20_000_000,
+			"兩個按鍵之間至少隔幾個 CPU 週期（10 MHz ⇒ 兩百萬＝0.2 秒）。"+
+				"遊戲會量玩家等了多久來當亂數種子，所以這個不能是 0")
 		keys = flag.String("keys", "",
-			"預先排進鍵盤佇列的字元（\\n 代表 Return）")
+			"預先排進鍵盤佇列的字元（\\n 與 \\r 都代表 Return＝CR 0x0D）")
 		watch = flag.String("watch", "",
 			"監看這些主記憶體位址的寫入（十六進位，逗號分隔），印出 PC 與值")
 		watchMax = flag.Int("watch-max", 40, "最多印幾筆監看紀錄")
@@ -243,8 +248,21 @@ func main() {
 	m.InstallFloat()
 	m.InstallVDisp()
 	m.InstallKeyboard()
+	if *cgrom != "" {
+		data, err := os.ReadFile(*cgrom)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		m.Bus.CGROM = data
+		fmt.Printf("CGROM：%s（%d bytes）\n", *cgrom, len(data))
+	}
+	m.Keys.Delay = *keyDelay
 	if *keys != "" {
-		m.Keys.PushString(strings.ReplaceAll(*keys, "\\n", "\n"))
+		// Return 在 X68000 上送的是 CR（0x0D），不是 LF。
+		// `\n` 與 `\r` 都對到 CR，免得踩這個坑。
+		r := strings.NewReplacer("\\n", "\r", "\\r", "\r", "\\t", "\t")
+		m.Keys.PushString(r.Replace(*keys))
 	}
 	if *randFixed >= 0 {
 		m.RNG.Mode = x68k.RNGFixed
