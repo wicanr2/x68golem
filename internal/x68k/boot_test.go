@@ -87,4 +87,56 @@ func TestBootToTitle(t *testing.T) {
 	if got := m.Bus.TextNonZero(512, 512); got < 500 {
 		t.Errorf("文字平面只有 %d 個非 0 像素，畫面等於空白", got)
 	}
+
+	compareWithMAME(t, m.Bus.TVRAM[:0x20000])
+}
+
+// compareWithMAME 把我們的 text VRAM 平面 0 與 MAME 在同一個畫面 dump 的
+// 那一份逐位元組比。
+//
+//	X68GOLEM_TEST_MAME_TVRAM  MAME 的 dump（128 KB，
+//	                          由 sangokushi_x68k_cht 的 tools/x68k-scripts/dump-tvram.lua 產生）
+//
+// 允許的唯一差異是**游標的閃爍相位**：游標是一個 8×16 的方塊，
+// 在平面 0 裡就是同一個 byte 欄位連續 16 列。相位取決於我們的垂直同步時間軸
+// 與 MAME 的差異，不是畫錯——所以這裡驗的是「差異只有那一塊」，
+// 而不是「完全相同」。多一個 byte 落在別的地方就是真的畫錯了。
+func compareWithMAME(t *testing.T, ours []byte) {
+	t.Helper()
+	ref := os.Getenv("X68GOLEM_TEST_MAME_TVRAM")
+	if ref == "" {
+		t.Log("X68GOLEM_TEST_MAME_TVRAM 沒設，跳過與 MAME 的逐位元組比對")
+		return
+	}
+	want, err := os.ReadFile(ref)
+	if err != nil {
+		t.Skipf("讀不到 %s：%v", ref, err)
+	}
+	if len(want) != len(ours) {
+		t.Fatalf("MAME 的 dump 是 %d bytes，我們的是 %d", len(want), len(ours))
+	}
+	const rowBytes = 128
+	var diffs []int
+	for i := range ours {
+		if ours[i] != want[i] {
+			diffs = append(diffs, i)
+		}
+	}
+	if len(diffs) == 0 {
+		t.Log("與 MAME 完全相同")
+		return
+	}
+	col := diffs[0] % rowBytes
+	row0 := diffs[0] / rowBytes
+	for n, i := range diffs {
+		if i%rowBytes != col || i/rowBytes != row0+n {
+			t.Fatalf("與 MAME 的差異不只游標那一塊：%d 筆，第一筆在 y=%d x=%d，"+
+				"第 %d 筆在 y=%d x=%d", len(diffs), row0, col*8, n, i/rowBytes, (i%rowBytes)*8)
+		}
+	}
+	if len(diffs) > 16 {
+		t.Fatalf("差異 %d bytes，超過一個 8×16 的游標方塊", len(diffs))
+	}
+	t.Logf("與 MAME 只差 %d bytes，全部落在 y=%d..%d x=%d 的一塊——游標的閃爍相位",
+		len(diffs), row0, row0+len(diffs)-1, col*8)
 }

@@ -24,7 +24,7 @@ mkdir -p "$ROOT/workplace/gocache" "$ROOT/workplace/gomodcache"
 
 # docker 預設不繼承 shell 的環境；交叉編譯要靠這幾個。
 PASS=()
-for v in GOOS GOARCH CGO_ENABLED X68GOLEM_TEST_Z X68GOLEM_TEST_DISK X68GOLEM_TEST_DISKS X68GOLEM_TEST_CGROM; do
+for v in GOOS GOARCH CGO_ENABLED X68GOLEM_TEST_Z X68GOLEM_TEST_DISK X68GOLEM_TEST_DISKS X68GOLEM_TEST_CGROM X68GOLEM_TEST_MAME_TVRAM; do
   [[ -n "${!v:-}" ]] && PASS+=(-e "$v=${!v}")
 done
 

@@ -30,7 +30,9 @@ MAME 是對的參考實作，**這個專案不取代它**——畫面驗收拿 M
 原封複製的——Atari ST 與 X68000 都是 MC68000，這一層沒有平台差異
 （`m68k/PROVENANCE.md`）。已知缺口：`addx.l`（`SANMAIN.Z` 用到 1 次）。
 
-**M2 完成：《三國志》開到標題畫面**（`docs/findings/008`）
+**M2 完成、M3 的文字面驗收通過**：《三國志》開到標題畫面，
+而且 text VRAM 與 MAME **逐位元組相同**（131,072 bytes；
+`docs/findings/008`、`009`）
 
 ```
 1:NEW GAME  2:LOAD DATA (1-2)? ▌
@@ -58,7 +60,7 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 | M0 | 服務面普查（`cmd/probe`）| 跑一次列出「用到而未實作」的 DOS call／IOCS／硬體位址 | **完成**（`docs/findings/001`）|
 | M1 | 68000 核心 | SingleStepTests 全綠 | **完成**（240,168 筆）|
 | M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **完成**（9 個 DOS call ＋ 30 個 IOCS ＋ FAT12 ＋ 軟碟 ＋ 精靈 ＋ DMAC ＋ 鍵盤；`TestBootToTitle`）|
-| M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **進行中**（text 平面已經畫得出來、`-shot` 可輸出；還沒對 MAME 逐點比）|
+| M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **文字面完成**（131,072 bytes 與 MAME 相同，`docs/findings/009`）；圖形面未驗 |
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | 未開始 |
 | M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | 未開始 |
 | M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | 未開始 |

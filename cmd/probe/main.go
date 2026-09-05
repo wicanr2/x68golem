@@ -160,6 +160,9 @@ func main() {
 			"監看這些主記憶體位址的寫入（十六進位，逗號分隔），印出 PC 與值")
 		watchMax = flag.Int("watch-max", 40, "最多印幾筆監看紀錄")
 		hot = flag.Int("hot", 0, "印出執行次數最多的 N 個位址（回答「它卡在哪」）")
+		dumpTVRAM = flag.String("dump-tvram", "",
+			"停下來時把 text VRAM 平面 0（0xE00000 起 128 KB）寫成檔案，"+
+				"給與 MAME 逐位元組比對用")
 		shot = flag.String("shot", "",
 			"停下來時把文字平面存成 PNG")
 		shotW = flag.Int("shot-width", 512, "截圖寬度")
@@ -375,6 +378,21 @@ func main() {
 		for _, e := range list {
 			fmt.Printf("  0x%06X  x%d\n", e.addr, e.n)
 		}
+	}
+
+	if *dumpTVRAM != "" {
+		plane0 := m.Bus.TVRAM[:0x20000]
+		nz := 0
+		for _, b := range plane0 {
+			if b != 0 {
+				nz++
+			}
+		}
+		if err := os.WriteFile(*dumpTVRAM, plane0, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("\ntext VRAM 平面 0 → %s（非 0 bytes %d）\n", *dumpTVRAM, nz)
 	}
 
 	if *shot != "" {
