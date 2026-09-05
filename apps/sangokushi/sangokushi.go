@@ -24,7 +24,26 @@ const (
 	// RandWrapper 是包住 FLOAT2.X `$FE0E` 的三行小函式（`FE0E ; rts`）。
 	// 亂數真正的來源在那裡，不在遊戲的執行檔裡。
 	RandWrapper = 0x6F28A
+
+	// Year／Month 是遊戲狀態裡的年與月。
+	// 出處：`sangokushi_x68k_cht` 的 `docs/formats/03`
+	//（年 L1、月 L2，劇本 1 起始是 189 年 1 月）。
+	Year  = 0x7A150
+	Month = 0x7A158
 )
+
+// Date 讀出目前的年與月。
+//
+// **這是「跑到哪裡了」最便宜的斷言**：畫面比對要 128 KB，而
+// 「189 年 1 月 → 189 年 2 月」是兩個整數。
+func Date(o *oracle.Oracle) (year, month uint32, err error) {
+	year, err = o.Long(Year)
+	if err != nil {
+		return
+	}
+	month, err = o.Long(Month)
+	return
+}
 
 // OnRand 在每一次 `sub_60580(n)` 被呼叫時通知一次，參數是 n。
 //

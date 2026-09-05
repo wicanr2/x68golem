@@ -76,3 +76,45 @@ func nonZero(b []byte) int {
 	}
 	return n
 }
+
+// TestPlayOneMonth 從冷啟動走到指令畫面，下完一個月的指令，看月份有沒有前進。
+//
+// 斷言用的是**遊戲狀態裡的年與月**（`docs/formats/03`），不是畫面：
+// 畫面比對要 128 KB，而「189 年 1 月 → 189 年 2 月」是兩個整數。
+func TestPlayOneMonth(t *testing.T) {
+	o := newOracle(t)
+	const (
+		window    = 2_000_000
+		minChange = 64
+		perKey    = 900_000_000
+	)
+	// 空白 → Return → NEW GAME → 劇本 1 → 君主 1 → 人數 1 → 英雄 1 →
+	// 能力抽取 ×5 → Y → 電腦強度 5 → 性格 1 → Hex 2 → 確認 Y → 開始 →
+	// 19（無行動）→ Y
+	seq := " \r1\r1\r1\r1\r     y\r5\r1\r2\ry\r 19\ry"
+	for i, r := range []byte(seq) {
+		if err := o.WaitSettled(window, minChange, perKey); err != nil {
+			t.Fatalf("第 %d 鍵（0x%02X）之前：%v", i, r, err)
+		}
+		o.ResetScreenChanges()
+		o.Keys(string(r))
+		if err := o.Run(2_000_000); err != nil {
+			t.Fatalf("送出第 %d 鍵之後：%v", i, err)
+		}
+	}
+	if err := o.WaitSettled(window, minChange, perKey); err != nil {
+		t.Fatal(err)
+	}
+	year, err := o.Long(0x7A150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	month, err := o.Long(0x7A158)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if year != 189 || month != 2 {
+		t.Fatalf("跑完一個月之後是 %d 年 %d 月，應該是 189 年 2 月", year, month)
+	}
+	t.Logf("%d 年 %d 月，共 %d 道指令、%d 個週期", year, month, o.Steps(), o.Cycles())
+}
