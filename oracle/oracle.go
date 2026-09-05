@@ -210,6 +210,29 @@ func (o *Oracle) TextPlane() []byte { return o.m.Bus.TVRAM[:0x20000] }
 // 給與 MAME 的 dump 逐位元組比對用。
 func (o *Oracle) GraphicsPlane() []byte { return o.m.Bus.GVRAM[:0x80000] }
 
+// SetByte／SetLong 寫記憶體。**對拍時要能擺盤面**：把兩個單位放好、
+// 把地形設成想要的那一種，再呼叫公式函式，才問得出「這一項到底怎麼算」。
+func (o *Oracle) SetByte(addr uint32, v byte) error {
+	return o.m.Bus.WriteByte(addr, v, 5)
+}
+
+// SetLong 寫一個 long（big-endian，與 68000 一致）。
+func (o *Oracle) SetLong(addr uint32, v uint32) error {
+	if err := o.m.Bus.WriteWord(addr, uint16(v>>16), 5); err != nil {
+		return err
+	}
+	return o.m.Bus.WriteWord(addr+2, uint16(v), 5)
+}
+
+// Call 從外面呼叫程式裡的一支函式（參數照 XC 的 C 慣例），回傳 D0。
+//
+// **這是無頭執行器與模擬器的分水嶺**：MAME 只能看，這裡可以問
+// 「同一組輸入餵給原版的這支函式，它回什麼」。副作用不還原——
+// 要乾淨的起點自己配 Snapshot／Restore。
+func (o *Oracle) Call(addr uint32, args ...uint32) (uint32, error) {
+	return o.m.CallSubroutine(addr, args...)
+}
+
 // OnCall 在 addr 上裝一個只看不改的攔截點。
 func (o *Oracle) OnCall(addr uint32, fn func(*x68k.Frame)) { o.m.InstallHook(addr, fn) }
 

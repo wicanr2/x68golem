@@ -62,6 +62,10 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 那是一州的歸屬，換成亂數直通之後 **262,144/262,144 完全相同**。
 「畫面對不上」因此變成「說得出是哪一次亂數」，而那正是這個專案的理由。
 
+**可以直接問原版的一支函式**（`oracle.Call`）：擺好盤面、固定亂數、
+攔掉繪圖與演出，然後叫下去。一斉攻撃的除數就是這樣對照的——
+六個除數全部等於 `2k − 1`，**0.55 秒，不必把遊戲玩到戰場**（`docs/findings/023`）。
+
 **現在還不是能跑遊戲的模擬器**，沒有的能力一律當場失敗，不會假裝成功。
 
 | 里程碑 | 目標 | 驗收 | 狀態 |
@@ -71,7 +75,7 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 | M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **完成**（9 個 DOS call ＋ 30 個 IOCS ＋ FAT12 ＋ 軟碟 ＋ 精靈 ＋ DMAC ＋ 鍵盤；`TestBootToTitle`）|
 | M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **完成**：文字面 131,072 bytes 相同（`docs/findings/009`），圖形面在五個取樣點與 MAME **逐位元組相同**（開場圖、雙龍、君主資料、指令畫面的地圖；`docs/findings/019`–`022`）|
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | **完成**：冷啟動 → 指令畫面 → 下完一個月 → 189 年 2 月（30 鍵、9,200 萬道指令、`go test` 27.5 秒，`TestPlayOneMonth`）|
-| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **介面完成**（`oracle`：`Load`／`Run`／`WaitSettled`／`Keys`／`Byte`–`Long`／`TextPlane`／`OnCall`／`Intercept`／`Snapshot`／`Restore`），**四種亂數模式都能用**（`Fixed`／`Seq`／`Replay`／直通——直通是把原版的 `FLOAT2.X` 載進來跑，`docs/findings/014`）；還沒拿去重跑戰場對照 |
+| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **完成**：`TestVolleyDivisor` 對 k = 1..6 各叫一次原版的 `sub_655B6`，六個除數全部等於 `2k − 1`，被攻擊者的損失不隨 k 變（`docs/findings/023`）。**0.55 秒，只要執行檔一個檔案**——不用磁碟、不用開機。四種亂數模式都能用（`Fixed`／`Seq`／`Replay`／直通，`docs/findings/014`）|
 | M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | **完成**：四層都在（`internal/*` 機器、`oracle/` 觀測、`runtime/xc/` C 呼叫慣例、`apps/sangokushi/` 遊戲專屬）；機器層沒有任何遊戲專屬字串 |
 
 ## 用法

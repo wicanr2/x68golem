@@ -31,3 +31,11 @@ func Word(f *x68k.Frame, off uint32) (uint16, error) { return f.ArgWord(off) }
 func CString(f *x68k.Frame, addr uint32, max int) (string, error) {
 	return f.Machine().ReadCString(addr, max)
 }
+
+// Call 依 XC 的呼叫慣例呼叫一支函式，回傳 D0。
+//
+// 參數一律當 long 推。**word 參數也推 long**——C 的預設引數提升本來就這樣，
+// 而 SANMAIN.Z 的呼叫點量到的也是這樣（`pea ($64).w` 推的是 long）。
+func Call(m *x68k.Machine, addr uint32, args ...uint32) (uint32, error) {
+	return m.CallSubroutine(addr, args...)
+}

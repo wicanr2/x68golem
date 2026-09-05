@@ -256,6 +256,8 @@ func (m *Machine) installVectors() {
 	binary.BigEndian.PutUint16(m.Bus.RAM[iocsStub+2:], 0x4E71)
 	binary.BigEndian.PutUint16(m.Bus.RAM[retStub:], 0x4E71)
 	binary.BigEndian.PutUint16(m.Bus.RAM[retStub+2:], 0x4E71)
+	binary.BigEndian.PutUint16(m.Bus.RAM[callStub:], 0x4E71)
+	binary.BigEndian.PutUint16(m.Bus.RAM[callStub+2:], 0x4E71)
 }
 
 // resume 讓 CPU 從 pc 繼續：68000 的 PC 指到 prefetch 之後，
