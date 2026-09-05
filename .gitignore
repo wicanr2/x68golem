@@ -1,0 +1,7 @@
+workplace/
+testdata/
+*.i64
+*.asm
+*.dim
+*.Z
+orig/
