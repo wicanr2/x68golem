@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,63 @@ func TestSingleStepLineF(t *testing.T) {
 
 func TestSingleStepMOVEQ(t *testing.T) {
 	testSingleStepCorpus(t, "MOVE.q.json.bin")
+}
+
+// ADDX/SUBX: only the register-to-register form is implemented, so the
+// corpus runs filtered. The filter is not a way to hide the gap — the
+// helper asserts the accepted count, so a change in the corpus or in the
+// filter fails the test instead of quietly testing less.
+//
+// The memory form -(Ay),-(Ax) reports an unimplemented opcode rather than
+// guessing its predecrement order and bus timeline.
+func registerForm(test corpusTest) bool { return !strings.Contains(test.Name, "-(A") }
+
+func TestSingleStepADDXByte(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "ADDX.b.json.bin", 1277, registerForm)
+}
+
+func TestSingleStepADDXWord(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "ADDX.w.json.bin", 1262, registerForm)
+}
+
+func TestSingleStepADDXLong(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "ADDX.l.json.bin", 1245, registerForm)
+}
+
+func TestSingleStepSUBXByte(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "SUBX.b.json.bin", 1255, registerForm)
+}
+
+func TestSingleStepSUBXWord(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "SUBX.w.json.bin", 1202, registerForm)
+}
+
+func TestSingleStepSUBXLong(t *testing.T) {
+	testSingleStepCorpusFiltered(t, "SUBX.l.json.bin", 1265, registerForm)
+}
+
+func TestSingleStepORItoCCR(t *testing.T) {
+	testSingleStepCorpus(t, "ORItoCCR.json.bin")
+}
+
+func TestSingleStepORItoSR(t *testing.T) {
+	testSingleStepCorpus(t, "ORItoSR.json.bin")
+}
+
+func TestSingleStepANDItoCCR(t *testing.T) {
+	testSingleStepCorpus(t, "ANDItoCCR.json.bin")
+}
+
+func TestSingleStepANDItoSR(t *testing.T) {
+	testSingleStepCorpus(t, "ANDItoSR.json.bin")
+}
+
+func TestSingleStepEORItoCCR(t *testing.T) {
+	testSingleStepCorpus(t, "EORItoCCR.json.bin")
+}
+
+func TestSingleStepEORItoSR(t *testing.T) {
+	testSingleStepCorpus(t, "EORItoSR.json.bin")
 }
 
 func TestSingleStepSWAP(t *testing.T) {

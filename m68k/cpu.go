@@ -277,6 +277,10 @@ func (c *CPU) StepAt(epoch uint64) (StepResult, error) {
 		return c.stepADDQuick(opcode)
 	case opcode&0xf100 == 0x5100 && opcode>>6&3 <= 2:
 		return c.stepSUBQuick(opcode)
+	case opcode&0xf130 == 0xd100 && opcode>>6&3 <= 2:
+		return c.stepExtendedArithmetic(opcode, false)
+	case opcode&0xf130 == 0x9100 && opcode>>6&3 <= 2:
+		return c.stepExtendedArithmetic(opcode, true)
 	case opcode&0xf000 == 0xd000 && opcode>>6&7 <= 2:
 		return c.stepADDToDataRegister(opcode)
 	case opcode&0xf000 == 0xd000 && opcode>>6&7 >= 4 && opcode>>6&7 <= 6 && opcode>>3&7 >= 2:
@@ -295,6 +299,18 @@ func (c *CPU) StepAt(epoch uint64) (StepResult, error) {
 		return c.stepCMPMemory(opcode)
 	case opcode&0xf000 == 0xb000 && opcode>>6&7 <= 2:
 		return c.stepCMP(opcode)
+	case opcode == 0x003c:
+		return c.stepLogicalToStatus(logicalOR, false)
+	case opcode == 0x007c:
+		return c.stepLogicalToStatus(logicalOR, true)
+	case opcode == 0x023c:
+		return c.stepLogicalToStatus(logicalAND, false)
+	case opcode == 0x027c:
+		return c.stepLogicalToStatus(logicalAND, true)
+	case opcode == 0x0a3c:
+		return c.stepLogicalToStatus(logicalEOR, false)
+	case opcode == 0x0a7c:
+		return c.stepLogicalToStatus(logicalEOR, true)
 	case opcode&0xff00 == 0x0a00 && opcode&0x003f != 0x003c:
 		return c.stepEORImmediate(opcode)
 	case opcode&0xf000 == 0xb000 && opcode>>6&7 == 4:
@@ -5030,4 +5046,126 @@ func (c *CPU) setLogicalFlags(value uint32, bits uint8) {
 	if value&negative != 0 {
 		c.State.SR |= 0x0008
 	}
+}
+
+// stepLogicalToStatus implements ORI/ANDI/EORI to CCR and to SR.
+//
+// The SR forms are privileged: in user mode they take the privilege
+// violation exception instead of executing. Both forms perform the same
+// extra prefetch of the word at PC-2 that MOVE to SR/CCR does, so the bus
+// timeline matches the hardware corpus.
+func (c *CPU) stepLogicalToStatus(operation logicalOperation, statusRegister bool) (StepResult, error) {
+	if statusRegister && c.State.SR&supervisor == 0 {
+		return c.enterStandardException(8, c.State.PC-4, nil, 34)
+	}
+	stream := moveByteStep{cpu: c, programFC: c.programFunctionCode(), dataFC: 1}
+	if c.State.SR&supervisor != 0 {
+		stream.dataFC = 5
+	}
+	immediate, err := stream.consumeExtension()
+	if err != nil {
+		return StepResult{}, err
+	}
+	if statusRegister {
+		c.State.SR = logicalWord(c.State.SR, immediate, operation) & 0xa71f
+	} else {
+		low := logicalByte(byte(c.State.SR), byte(immediate), operation)
+		c.State.SR = c.State.SR&0xff00 | uint16(low)&0x001f
+	}
+	stream.programFC = c.programFunctionCode()
+	pipelineAddress := (c.State.PC - 2) & addressMask
+	pipelineWord, err := c.Bus.ReadWord(pipelineAddress, stream.programFC)
+	if err != nil {
+		return StepResult{}, err
+	}
+	stream.transactions = append(stream.transactions,
+		readTransaction(pipelineAddress, stream.programFC, pipelineWord))
+	if err := stream.refill(); err != nil {
+		return StepResult{}, err
+	}
+	return StepResult{Clocks: 20, Transactions: stream.transactions}, nil
+}
+
+// stepExtendedArithmetic implements ADDX and SUBX.
+//
+// Only the register-to-register form (bit 3 clear) is implemented. The
+// memory form -(Ay),-(Ax) reports an unimplemented opcode rather than
+// guessing: a wrong predecrement would corrupt memory silently, and the
+// hardware corpus is the only thing that can settle its bus timeline.
+//
+// Z is *not* simply "result == 0": these instructions clear Z when the
+// result is non-zero and leave it alone otherwise, so that a multi-word
+// chain reports zero only when every word was zero.
+func (c *CPU) stepExtendedArithmetic(opcode uint16, subtract bool) (StepResult, error) {
+	if opcode&0x0008 != 0 {
+		return StepResult{}, fmt.Errorf("m68k: opcode 0x%04x is not implemented", opcode)
+	}
+	sourceReg, destinationReg := uint8(opcode&7), uint8(opcode>>9&7)
+	var bits uint8
+	var clocks uint32
+	switch opcode >> 6 & 3 {
+	case 0:
+		bits, clocks = 8, 4
+	case 1:
+		bits, clocks = 16, 4
+	case 2:
+		bits, clocks = 32, 8
+	}
+	var mask uint32
+	switch bits {
+	case 8:
+		mask = 0xff
+	case 16:
+		mask = 0xffff
+	default:
+		mask = 0xffff_ffff
+	}
+	source := c.State.D[sourceReg] & mask
+	destination := c.State.D[destinationReg] & mask
+	extend := uint32(0)
+	if c.State.SR&0x0010 != 0 {
+		extend = 1
+	}
+	zero := c.State.SR&0x0004 != 0
+
+	// The flags are computed from the bit formulas rather than by reusing
+	// setAdditionFlags with a doctored source: folding the extend bit into
+	// the source loses the carry when source is already all ones, which is
+	// exactly the case the hardware corpus rejected.
+	var sign uint32
+	switch bits {
+	case 8:
+		sign = 0x80
+	case 16:
+		sign = 0x8000
+	default:
+		sign = 0x8000_0000
+	}
+	var result, overflow, carry uint32
+	if subtract {
+		result = (destination - source - extend) & mask
+		overflow = (destination ^ source) & (destination ^ result) & sign
+		carry = (^destination&source | result&(^destination|source)) & sign
+	} else {
+		result = (destination + source + extend) & mask
+		overflow = ^(destination ^ source) & (destination ^ result) & sign
+		carry = (destination&source | ^result&(destination|source)) & sign
+	}
+	c.State.SR &^= 0x001f
+	if result&sign != 0 {
+		c.State.SR |= 0x0008
+	}
+	if overflow != 0 {
+		c.State.SR |= 0x0002
+	}
+	if carry != 0 {
+		c.State.SR |= 0x0011
+	}
+	// Z is not "result == 0": these instructions only ever clear Z, so a
+	// multi-word chain reports zero only when every word was zero.
+	if result == 0 && zero {
+		c.State.SR |= 0x0004
+	}
+	c.State.D[destinationReg] = c.State.D[destinationReg]&^mask | result
+	return c.refillSequential(controlEA{returnPC: c.State.PC}, clocks)
 }

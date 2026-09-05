@@ -148,6 +148,8 @@ func main() {
 			"掃映像裡的 $FE00–$FEFF（FLOAT2.X 的浮點呼叫）並列出號碼")
 		disks = flag.String("disks", "",
 			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
+		logSvc = flag.Int("log-services", 0,
+			"把最後 N 次服務呼叫連同 SR／堆疊指標印出來")
 		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
 		latch = flag.Bool("latch-io", false,
 			"把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。"+
@@ -228,6 +230,7 @@ func main() {
 	m.InstallFiles()
 	m.InstallSprite()
 	m.InstallFloat()
+	m.InstallVDisp()
 	if *randFixed >= 0 {
 		m.RNG.Mode = x68k.RNGFixed
 		m.RNG.Value = uint32(*randFixed)
@@ -262,6 +265,15 @@ func main() {
 	m.Bus.StrictIO = !*lenient
 	m.LenientServices = *lenient
 	m.SetTraceDepth(*trace)
+	var svcLog []string
+	if *logSvc > 0 {
+		m.ServiceLog = func(line string) {
+			svcLog = append(svcLog, line)
+			if len(svcLog) > *logSvc {
+				svcLog = svcLog[1:]
+			}
+		}
+	}
 
 	var stopErr error
 	for m.Steps() < *maxSteps {
@@ -271,7 +283,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("執行 %d 道指令後停下\n", m.Steps())
+	fmt.Printf("執行 %d 道指令後停下（%d 週期，垂直同步處理常式跑了 %d 次）\n",
+		m.Steps(), m.Cycles(), m.VDispCalls)
 	if stopErr != nil {
 		fmt.Printf("停下的原因：%v\n", stopErr)
 	} else {
@@ -282,6 +295,13 @@ func main() {
 		fmt.Println("\n⚠ -lenient：沒實作的一律回 0。程式會依回傳值分支，" +
 			"所以以下清單只能當「還有哪些服務存在」的線索，不能當事實——" +
 			"可能少（走錯路沒碰到），也可能多（走進正常情況不會進的錯誤處理）。")
+	}
+
+	if len(svcLog) > 0 {
+		fmt.Printf("\n== 最後 %d 次服務呼叫\n", len(svcLog))
+		for _, l := range svcLog {
+			fmt.Println("  " + l)
+		}
 	}
 
 	if tp := m.Trace(); len(tp) > 0 {

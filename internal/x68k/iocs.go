@@ -10,6 +10,7 @@ func (m *Machine) InstallIOCS() {
 	m.IOCSCalls[0x70] = iocsNoop // _MS_INIT：沒有滑鼠
 	m.IOCSCalls[0x72] = iocsNoop // _MS_CUROF：沒有滑鼠游標
 	m.IOCSCalls[0x7D] = iocsNoop // _SKEY_MOD：沒有軟體鍵盤
+	m.IOCSCalls[0x80] = iocsBIntvcs
 	m.IOCSCalls[0x81] = iocsSuper
 	m.IOCSCalls[0x90] = iocsGClrOn
 }
@@ -64,10 +65,46 @@ func iocsGClrOn(m *Machine) error {
 	return nil
 }
 
+// iocsBIntvcs 是 `$80 _B_INTVCS`（d1.w 向量編號、a1.l 新位址）：
+// 換掉一個 IOCS 級的向量，回傳換掉之前的位址。
+//
+// 與 DOS call 的 `_INTVCS` 是同一件事的兩個層級，所以共用同一張表：
+// 兩邊用的編號空間不重疊（IOCS 是小號碼，Human68k 是 $FFxx 那一段）。
+func iocsBIntvcs(m *Machine) error {
+	num := uint16(m.CPU.State.D[1])
+	if m.Vectors == nil {
+		m.Vectors = map[uint16]uint32{}
+	}
+	old := m.Vectors[num]
+	m.Vectors[num] = m.CPU.State.A[1]
+	m.SetResult(old)
+	return nil
+}
+
 // iocsSuper 是 IOCS `$81 _B_SUPER`：切換 supervisor／user 模式。
 //
-//	A1 = 0    → 進 supervisor，D0 回舊的 USP
-//	A1 ≠ 0    → 回 user，USP 設成 A1，D0 回 0
+//	A1 = 0，目前在 user      → **SSP ← USP**，進 supervisor，D0 回舊的 USP
+//	A1 = 0，目前已在 supervisor → 什麼都不做，**D0 回 −1**
+//	A1 ≠ 0                   → USP ← A1，回 user，D0 回 0
+//
+// 「已經在 supervisor 就回 −1」不是猜的，程式自己在檢查：
+//
+//	0x071048  movea.l (d16,pc),a1     ← 取回上次存的值
+//	0x07104E  cmpa.l  #$FFFFFFFF,a1
+//	0x071054  beq.w   跳過
+//	0x071058  moveq   #$81,d0
+//	0x07105A  trap    #15             ← 只有不是 −1 才還原
+//
+// 少了這一條，巢狀的 `_B_SUPER(0)` 會回傳一個過期的 USP，程式把它當成
+// 「要還原的堆疊指標」存起來，離開時就把堆疊指標設歪 6 bytes——
+// 然後 `rts` 彈出垃圾，PC 落在例外向量表本身（0x2C），
+// 接著把向量表當成程式碼跑。
+//
+// **`SSP ← USP` 那一步是關鍵，不是細節。** 第一版只切了 S 位元，沒有把
+// 堆疊指標搬過去，於是程式在 `_B_SUPER(0)` 之後的 `rts` 從一個完全不同的
+// 堆疊上彈出東西——PC 變成 0x2C（例外向量表本身的位址），接著把向量表
+// 當成程式碼執行。症狀離原因很遠，但成因只有一個：**程式以為自己還在同一個
+// 堆疊上**，而 Human68k 的 `_B_SUPER` 保證了這件事。
 //
 // 判準（L2）：呼叫點是
 //
@@ -83,12 +120,25 @@ func iocsSuper(m *Machine) error {
 	const supervisorBit = 0x2000
 	a1 := m.CPU.State.A[1]
 	if a1 == 0 {
+		if m.CPU.State.SR&supervisorBit != 0 {
+			m.SetResult(0xFFFFFFFF) // 已經在 supervisor
+			return nil
+		}
 		old := m.CPU.State.USP
+		// 系統的 supervisor 堆疊要留著：離開時要放回去，否則下一次
+		// 從 user mode 進來的例外會把框推到程式自己的堆疊底下，
+		// 一路蓋掉呼叫端還沒用到的返回位址。
+		m.systemSSP = m.CPU.State.SSP
+		m.CPU.State.SSP = old // 程式繼續用同一個堆疊
 		m.CPU.State.SR |= supervisorBit
 		m.SetResult(old)
 		return nil
 	}
 	m.CPU.State.USP = a1
+	if m.systemSSP != 0 {
+		m.CPU.State.SSP = m.systemSSP
+		m.systemSSP = 0
+	}
 	m.CPU.State.SR &^= supervisorBit
 	m.SetResult(0)
 	return nil

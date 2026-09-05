@@ -94,6 +94,22 @@ type Machine struct {
 
 	// trace 是最近 N 道指令的環狀緩衝（PC ＋ 指令字）。
 	// 停在一個沒實作的服務上時，「它是怎麼走到這裡的」比什麼都重要。
+	// 垂直同步中斷的狀態（vdisp.go）。
+	vdispHandler uint32
+	vdispCount   uint32
+	vdispPeriod  byte
+	vdispNextAt  uint64
+	callStack    []m68k.State
+	// VDispCalls 是垂直同步處理常式被叫過幾次。
+	VDispCalls int
+
+	// ServiceLog 為非 nil 時，每一次服務呼叫都寫一行進去。
+	// 用來回答「這一連串服務裡，堆疊是在哪一步歪掉的」。
+	ServiceLog func(line string)
+
+	// systemSSP 是 _B_SUPER 進 supervisor 之前的系統堆疊指標。
+	systemSSP uint32
+
 	current  *Service
 	trace    []TracePoint
 	traceCap int
@@ -170,6 +186,8 @@ func (m *Machine) installVectors() {
 	binary.BigEndian.PutUint16(m.Bus.RAM[dosStub+2:], 0x4E71)
 	binary.BigEndian.PutUint16(m.Bus.RAM[iocsStub:], 0x4E71)
 	binary.BigEndian.PutUint16(m.Bus.RAM[iocsStub+2:], 0x4E71)
+	binary.BigEndian.PutUint16(m.Bus.RAM[retStub:], 0x4E71)
+	binary.BigEndian.PutUint16(m.Bus.RAM[retStub+2:], 0x4E71)
 }
 
 // resume 讓 CPU 從 pc 繼續：68000 的 PC 指到 prefetch 之後，
@@ -258,6 +276,11 @@ func (m *Machine) Step() error {
 	} else if handled {
 		return nil
 	}
+	if handled, err := m.serviceVDisp(); err != nil {
+		return err
+	} else if handled {
+		return nil
+	}
 	m.Bus.PC = m.CPU.State.PC - 4
 	if m.traceCap > 0 {
 		tp := TracePoint{PC: m.Bus.PC}
@@ -287,6 +310,8 @@ func (m *Machine) serviceStub() (bool, error) {
 		return true, m.serviceDOS()
 	case iocsStub:
 		return true, m.serviceIOCS()
+	case retStub:
+		return true, m.returnFromSub()
 	}
 	return false, nil
 }
@@ -332,6 +357,7 @@ func (m *Machine) serviceDOS() error {
 		kind = "F-line"
 	}
 	s := m.note(kind, num, human68k.DOSCallName(op), pc)
+	m.logService(kind, num, pc)
 	m.current = s
 	fn, ok := m.DOSCalls[num]
 	if kind == "FLOAT2" {
@@ -354,6 +380,10 @@ func (m *Machine) serviceDOS() error {
 }
 
 func (m *Machine) serviceIOCS() error {
+	if m.ServiceLog != nil {
+		st := m.CPU.State
+		m.ServiceLog(fmt.Sprintf("  ↳進入前 SR=%04X USP=0x%06X SSP=0x%06X", st.SR, st.USP, st.SSP))
+	}
 	_, pc, err := m.frame()
 	if err != nil {
 		return err
@@ -361,6 +391,7 @@ func (m *Machine) serviceIOCS() error {
 	// trap 堆的是「下一道指令的位址」，直接回去就好。
 	num := uint16(m.CPU.State.D[0] & 0xFF)
 	s := m.note("IOCS", num, IOCSName(num), pc-2)
+	m.logService("IOCS", num, pc-2)
 	m.current = s
 	fn, ok := m.IOCSCalls[num]
 	if !ok {
@@ -375,6 +406,16 @@ func (m *Machine) serviceIOCS() error {
 		return err
 	}
 	return m.resume(pc)
+}
+
+func (m *Machine) logService(kind string, num uint16, pc uint32) {
+	if m.ServiceLog == nil {
+		return
+	}
+	st := m.CPU.State
+	m.ServiceLog(fmt.Sprintf(
+		"%-9s $%02X %-10s PC=0x%06X SR=%04X USP=0x%06X SSP=0x%06X D0=0x%08X D1=0x%08X A1=0x%08X",
+		kind, num, IOCSName(num), pc, st.SR, st.USP, st.SSP, st.D[0], st.D[1], st.A[1]))
 }
 
 // SortedServices 回傳依種類與呼叫號排好的服務清單，給報告用。
