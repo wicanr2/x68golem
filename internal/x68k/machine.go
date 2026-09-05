@@ -64,6 +64,9 @@ type Machine struct {
 	// Vectors 是程式用 _INTVCS 換掉的 Human68k 向量。
 	Vectors map[uint16]uint32
 
+	// Sprite 是精靈與 BG 的狀態。
+	Sprite *Sprite
+
 	// Drives 是軟碟機，依 PDA 低 4 位索引。原版磁碟由使用者自備。
 	Drives []*Drive
 
@@ -318,9 +321,18 @@ func (m *Machine) serviceDOS() error {
 		return err
 	}
 	num := op & 0x00FF
-	s := m.note("DOS call", num, human68k.DOSCallName(op), pc)
+	kind := "DOS call"
+	if human68k.IsFloatCall(op) {
+		kind = "FLOAT2"
+	} else if !human68k.IsDOSCall(op) {
+		kind = "F-line"
+	}
+	s := m.note(kind, num, human68k.DOSCallName(op), pc)
 	m.current = s
 	fn, ok := m.DOSCalls[num]
+	if kind != "DOS call" {
+		ok = false
+	}
 	if !ok {
 		if !m.LenientServices {
 			return &ErrUnimplemented{Service: s}

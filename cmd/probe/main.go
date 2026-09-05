@@ -106,6 +106,7 @@ func main() {
 	m.InstallConsole()
 	m.InstallFDD()
 	m.InstallFiles()
+	m.InstallSprite()
 	if *disks != "" {
 		for _, p := range strings.Split(*disks, ",") {
 			d, err := x68k.LoadDIM(strings.TrimSpace(p))

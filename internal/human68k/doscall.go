@@ -31,14 +31,32 @@ var dosCallNames = map[uint16]string{
 	0x44: "_IOCTRL",
 }
 
-// DOSCallName 把 F-line 指令字（$FF00–$FF7F）翻成名稱。
-// 沒收錄就回 `$FFxx`——不猜。
+// DOSCallName 把 F-line 指令字翻成名稱。
+//
+// F-line（`$Fxxx`）在 Human68k 上不是只有 DOS call：
+//
+//	$FF00–$FF7F  DOS call（Human68k 本體）
+//	$FE00–$FEFF  FLOAT2.X／FLOAT4.X 的浮點與長整數運算
+//	其他         沒有人接就是非法指令
+//
+// **這個遊戲兩種都會用到。** Disk A 的 `CONFIG.SYS` 明寫
+// `DEVICE = \SYS\FLOAT2.X`，所以 `$FExx` 在真機上有人接
+// （`docs/findings/004`）。沒收錄的號碼一律照原樣印，不猜。
 func DOSCallName(opcode uint16) string {
-	if name, ok := dosCallNames[opcode&0x00FF]; ok {
-		return name
+	if IsDOSCall(opcode) {
+		if name, ok := dosCallNames[opcode&0x00FF]; ok {
+			return name
+		}
+		return fmt.Sprintf("$%04X", opcode)
 	}
-	return fmt.Sprintf("$%04X", opcode)
+	if IsFloatCall(opcode) {
+		return fmt.Sprintf("FLOAT2 $%02X", opcode&0x00FF)
+	}
+	return fmt.Sprintf("$%04X（沒有人接的 F-line）", opcode)
 }
 
 // IsDOSCall 判斷一個指令字是不是 Human68k 的 DOS call。
 func IsDOSCall(opcode uint16) bool { return opcode >= 0xFF00 && opcode <= 0xFF7F }
+
+// IsFloatCall 判斷一個指令字是不是 FLOAT2.X 那一段。
+func IsFloatCall(opcode uint16) bool { return opcode >= 0xFE00 && opcode <= 0xFEFF }

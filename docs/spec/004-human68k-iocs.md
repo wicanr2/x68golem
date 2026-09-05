@@ -22,6 +22,17 @@
 「用到而未實作」的 DOS call／IOCS／硬體位址。這是 M0 的全部內容，
 也是 §003 那個「普查是下界」風險的解法。
 
+## F-line 不是只有 DOS call
+
+| 範圍 | 誰接 |
+|---|---|
+| `$FF00–$FF7F` | Human68k 本體的 DOS call |
+| `$FE00–$FEFF` | `FLOAT2.X`／`FLOAT4.X` 的浮點與長整數運算 |
+
+《三國志》Disk A 的 `CONFIG.SYS` 明寫 `DEVICE = \SYS\FLOAT2.X` 與
+`DEVICE = \SYS\OPMDRV.X`，所以真機的執行環境包含那兩個驅動
+（`docs/findings/004`）。這一段還沒實作，碰到就 fail-closed 並印出號碼。
+
 ## 交棒契約（M2 的第一件事）
 
 Human68k 跳進 `.Z` 的進入點之前，會先在暫存器與記憶體裡放好一組東西
