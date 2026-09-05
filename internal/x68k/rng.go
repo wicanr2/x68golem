@@ -56,7 +56,7 @@ type RNG struct {
 	Mode  RNGMode
 	Value uint32   // RNGFixed
 	Seq   []uint32 // RNGSeq／RNGReplay
-	pos   int
+	Pos   int
 
 	// Log 記下每一次取值：對拍要「同一條流」時，先錄一次再回放。
 	Log []uint32
@@ -71,12 +71,12 @@ func (r *RNG) Next() (uint32, error) {
 	case RNGFixed:
 		v = r.Value
 	case RNGSeq, RNGReplay:
-		if r.pos >= len(r.Seq) {
+		if r.Pos >= len(r.Seq) {
 			return 0, fmt.Errorf("亂數序列用完了（已經取了 %d 個）——"+
-				"**不會退回真亂數**，因為安靜換來源會讓「沒對到」看起來像「對到了」", r.pos)
+				"**不會退回真亂數**，因為安靜換來源會讓「沒對到」看起來像「對到了」", r.Pos)
 		}
-		v = r.Seq[r.pos]
-		r.pos++
+		v = r.Seq[r.Pos]
+		r.Pos++
 	default:
 		return 0, fmt.Errorf("rand() 被呼叫了，但還沒指定亂數來源。"+
 			"FLOAT2.X 的 rand() 演算法還沒解出來，所以沒有直通模式——"+

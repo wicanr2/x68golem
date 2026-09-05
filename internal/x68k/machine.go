@@ -114,6 +114,10 @@ type Machine struct {
 	dmacVector    byte
 	DMACTransfers int
 
+	// 函式攔截（hooks.go）。
+	hooks      map[uint32]func(*Frame)
+	intercepts map[uint32]func(*Frame) (uint32, bool)
+
 	// HotPC 統計每個位址被執行過幾次。開了才會統計。
 	HotPC map[uint32]int
 
@@ -313,6 +317,13 @@ func (m *Machine) Step() error {
 		return nil
 	}
 	m.Bus.PC = m.CPU.State.PC - 4
+	if m.hooks != nil || m.intercepts != nil {
+		if handled, err := m.serviceHooks(m.Bus.PC); err != nil {
+			return err
+		} else if handled {
+			return nil
+		}
+	}
 	if m.HotPC != nil {
 		m.HotPC[m.Bus.PC]++
 	}
