@@ -31,7 +31,7 @@ func TestInterceptReplacesFunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewMachine(im, DefaultRAMSize)
+	m, err := NewMachine(im, DefaultRAMSize, "TEST.X")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestHookDoesNotChangeExecution(t *testing.T) {
 	}
 	words = append(words, 0x203C, 0x0000, 0xDEAD, 0x4E75)
 	im, _ := human68k.ParseZ(buildZ(base, words...))
-	m, _ := NewMachine(im, DefaultRAMSize)
+	m, _ := NewMachine(im, DefaultRAMSize, "TEST.X")
 	m.Bus.StrictIO = true
 	seen := 0
 	m.InstallHook(target, func(f *Frame) { seen++ })

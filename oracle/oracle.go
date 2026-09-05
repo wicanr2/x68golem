@@ -11,6 +11,7 @@ package oracle
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/wicanr2/x68golem/internal/human68k"
 	"github.com/wicanr2/x68golem/internal/x68k"
@@ -64,7 +65,7 @@ func Load(cfg Config) (*Oracle, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := x68k.NewMachine(im, cfg.RAMSize)
+	m, err := x68k.NewMachine(im, cfg.RAMSize, filepath.Base(cfg.Exe))
 	if err != nil {
 		return nil, err
 	}

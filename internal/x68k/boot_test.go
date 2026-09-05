@@ -2,6 +2,7 @@ package x68k
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestBootToTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewMachine(im, DefaultRAMSize)
+	m, err := NewMachine(im, DefaultRAMSize, filepath.Base(z))
 	if err != nil {
 		t.Fatal(err)
 	}

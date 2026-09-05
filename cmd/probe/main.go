@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"image/png"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -237,7 +238,7 @@ func main() {
 		return
 	}
 
-	m, err := x68k.NewMachine(im, *ram)
+	m, err := x68k.NewMachine(im, *ram, filepath.Base(*zPath))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

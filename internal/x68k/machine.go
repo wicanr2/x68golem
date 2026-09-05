@@ -144,7 +144,11 @@ type TracePoint struct {
 }
 
 // NewMachine 建一台機器並把 image 載進去。
-func NewMachine(im *human68k.Image, ramSize int) (*Machine, error) {
+//
+// name 是交給程式的執行檔檔名（Human68k 放在程式管理區塊的 A0+0xC4）。
+// **這一層不知道跑的是哪一支程式**，所以名字由呼叫端給——
+// 機器層出現特定遊戲的字串就是分層破了（`docs/spec/006`）。
+func NewMachine(im *human68k.Image, ramSize int, name string) (*Machine, error) {
 	if ramSize <= 0 {
 		ramSize = DefaultRAMSize
 	}
@@ -186,7 +190,7 @@ func NewMachine(im *human68k.Image, ramSize int) (*Machine, error) {
 		ProgramEnd: im.BSSEnd(),
 		BlockEnd:   uint32(ramSize) - supervisorStack,
 		Path:       "A:\\",
-		Name:       "SANMAIN.Z",
+		Name:       name,
 	}
 	a0, a1, a2, a3 := proc.Layout(bus.RAM)
 	m.Process = proc

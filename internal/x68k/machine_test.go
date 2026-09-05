@@ -31,7 +31,7 @@ func newTestMachine(t *testing.T, words ...uint16) *Machine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewMachine(im, DefaultRAMSize)
+	m, err := NewMachine(im, DefaultRAMSize, "TEST.X")
 	if err != nil {
 		t.Fatal(err)
 	}

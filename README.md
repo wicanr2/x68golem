@@ -62,8 +62,8 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 | M2 | 載入器 ＋ 11 個 DOS call ＋ 前 10 個 IOCS | 跑到標題畫面 | **完成**（9 個 DOS call ＋ 30 個 IOCS ＋ FAT12 ＋ 軟碟 ＋ 精靈 ＋ DMAC ＋ 鍵盤；`TestBootToTitle`）|
 | M3 | text／graphics 平面 ＋ 調色盤 | 標題畫面與 MAME 的索引截圖逐點相同 | **文字面完成**（131,072 bytes 與 MAME 相同，`docs/findings/009`）；圖形面未驗 |
 | M4 | 鍵盤 ＋ 計時器 | 冷啟動走到指令畫面、下完一個月的指令 | 未開始 |
-| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | 未開始 |
-| M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | 未開始 |
+| M5 | 觀測 API（快照、`OnCall`、**亂數控制**）| 用 `go test` 重跑一斉攻撃的除數對照 | **介面完成**（`oracle` 套件：`Load`／`Run`／`RunUntil`／`Keys`／`Byte`–`Long`／`TextPlane`／`OnCall`／`Intercept`／`Snapshot`／`Restore`）；還沒拿去重跑戰場對照 |
+| M6 | 分層：`runtime/xc` 與 `apps/` 拆開 | 第二個 X68000 程式不必 fork | **機器層已無遊戲專屬字串**（執行檔名改由呼叫端給）；`apps/sangokushi` 已建立；`runtime/xc` 未開始 |
 
 ## 用法
 
@@ -71,6 +71,14 @@ CRTC 的動作位元都通了。遊戲自己把 `KANJIF.DAT`、`KAODATA` 與四�
 tools/fetch-m68000-tests.sh    # 抓 68000 語料（182 MB，不進版控）
 tools/go.sh test ./...         # 建置與測試都走 docker
 tools/sync-m68k.sh --check     # m68k/ 有沒有跟上游分岔
+
+# 當套件用（remake 的 go test 這樣寫）
+#
+#   o, _ := oracle.Load(oracle.Config{Exe: …, Disks: …, CGROM: …, LatchIO: true,
+#                                     Rand: oracle.RandSource{Fixed: &v}})
+#   o.Keys(" \r"); o.Run(200_000_000)
+#   snap := o.Snapshot()          // 從同一個盤面展開變體
+#   sangokushi.ForceRand(o, func(n uint32) uint32 { return 0 })
 
 # 開機到標題畫面（執行檔、磁碟、CGROM 都是玩家自備）
 tools/go.sh run ./cmd/probe -z SANMAIN.Z -disks A.dim,B.dim \
