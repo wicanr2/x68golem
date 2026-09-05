@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"image/png"
 	"os"
 	"sort"
 	"strconv"
@@ -148,6 +149,11 @@ func main() {
 			"掃映像裡的 $FE00–$FEFF（FLOAT2.X 的浮點呼叫）並列出號碼")
 		disks = flag.String("disks", "",
 			"軟碟映像（`.DIM`），逗號分隔，依序放進 0 號、1 號磁碟機。玩家自備")
+		hot = flag.Int("hot", 0, "印出執行次數最多的 N 個位址（回答「它卡在哪」）")
+		shot = flag.String("shot", "",
+			"停下來時把文字平面存成 PNG")
+		shotW = flag.Int("shot-width", 512, "截圖寬度")
+		shotH = flag.Int("shot-height", 512, "截圖高度")
 		logSvc = flag.Int("log-services", 0,
 			"把最後 N 次服務呼叫連同 SR／堆疊指標印出來")
 		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
@@ -265,6 +271,9 @@ func main() {
 	m.Bus.StrictIO = !*lenient
 	m.LenientServices = *lenient
 	m.SetTraceDepth(*trace)
+	if *hot > 0 {
+		m.HotPC = map[uint32]int{}
+	}
 	var svcLog []string
 	if *logSvc > 0 {
 		m.ServiceLog = func(line string) {
@@ -283,8 +292,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("執行 %d 道指令後停下（%d 週期，垂直同步處理常式跑了 %d 次）\n",
-		m.Steps(), m.Cycles(), m.VDispCalls)
+	fmt.Printf("執行 %d 道指令後停下（%d 週期，垂直同步 %d 次，DMA 完成 %d 次）\n",
+		m.Steps(), m.Cycles(), m.VDispCalls, m.DMACTransfers)
 	if stopErr != nil {
 		fmt.Printf("停下的原因：%v\n", stopErr)
 	} else {
@@ -295,6 +304,40 @@ func main() {
 		fmt.Println("\n⚠ -lenient：沒實作的一律回 0。程式會依回傳值分支，" +
 			"所以以下清單只能當「還有哪些服務存在」的線索，不能當事實——" +
 			"可能少（走錯路沒碰到），也可能多（走進正常情況不會進的錯誤處理）。")
+	}
+
+	if *hot > 0 {
+		type pc struct {
+			addr uint32
+			n    int
+		}
+		var list []pc
+		for a, n := range m.HotPC {
+			list = append(list, pc{a, n})
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
+		if len(list) > *hot {
+			list = list[:*hot]
+		}
+		fmt.Printf("\n== 執行次數最多的 %d 個位址\n", len(list))
+		for _, e := range list {
+			fmt.Printf("  0x%06X  x%d\n", e.addr, e.n)
+		}
+	}
+
+	if *shot != "" {
+		n := m.Bus.TextNonZero(*shotW, *shotH)
+		f, err := os.Create(*shot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := png.Encode(f, m.Bus.TextImage(*shotW, *shotH)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		f.Close()
+		fmt.Printf("\n截圖：%s（%d×%d，非 0 像素 %d）\n", *shot, *shotW, *shotH, n)
 	}
 
 	if len(svcLog) > 0 {

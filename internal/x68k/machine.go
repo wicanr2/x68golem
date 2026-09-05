@@ -103,6 +103,14 @@ type Machine struct {
 	// VDispCalls 是垂直同步處理常式被叫過幾次。
 	VDispCalls int
 
+	// DMAC 的狀態（dmac.go）。
+	dmacPending   bool
+	dmacVector    byte
+	DMACTransfers int
+
+	// HotPC 統計每個位址被執行過幾次。開了才會統計。
+	HotPC map[uint32]int
+
 	// ServiceLog 為非 nil 時，每一次服務呼叫都寫一行進去。
 	// 用來回答「這一連串服務裡，堆疊是在哪一步歪掉的」。
 	ServiceLog func(line string)
@@ -145,6 +153,17 @@ func NewMachine(im *human68k.Image, ramSize int) (*Machine, error) {
 		services:  map[string]*Service{},
 	}
 	m.installVectors()
+	bus.OnRegisterWrite = func(addr uint32, v byte) bool {
+		if addr < dmacBase || addr >= dmacBase+dmacChannels*dmacChanSize {
+			return false
+		}
+		vec, fire := m.dmacWrite(addr, v)
+		if fire {
+			m.dmacVector = vec
+			m.dmacPending = true
+		}
+		return true
+	}
 
 	// Human68k 交棒契約：A0 指向記憶體管理標頭（＝載入基底 − 0x100），
 	// A1 是記憶體結束，A2 是命令列，A3 是環境（internal/human68k/process.go）。
@@ -276,12 +295,20 @@ func (m *Machine) Step() error {
 	} else if handled {
 		return nil
 	}
+	if handled, err := m.serviceDMAC(); err != nil {
+		return err
+	} else if handled {
+		return nil
+	}
 	if handled, err := m.serviceVDisp(); err != nil {
 		return err
 	} else if handled {
 		return nil
 	}
 	m.Bus.PC = m.CPU.State.PC - 4
+	if m.HotPC != nil {
+		m.HotPC[m.Bus.PC]++
+	}
 	if m.traceCap > 0 {
 		tp := TracePoint{PC: m.Bus.PC}
 		tp.Words[0] = m.CPU.State.Prefetch[0]

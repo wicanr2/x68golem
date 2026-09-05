@@ -66,17 +66,33 @@ func iocsGClrOn(m *Machine) error {
 }
 
 // iocsBIntvcs 是 `$80 _B_INTVCS`（d1.w 向量編號、a1.l 新位址）：
-// 換掉一個 IOCS 級的向量，回傳換掉之前的位址。
+// 換掉一個向量，回傳換掉之前的位址。
 //
-// 與 DOS call 的 `_INTVCS` 是同一件事的兩個層級，所以共用同一張表：
-// 兩邊用的編號空間不重疊（IOCS 是小號碼，Human68k 是 $FFxx 那一段）。
+// **編號小於 0x100 的要真的寫進 68000 的例外向量表**，不是記在旁邊的表裡。
+// 硬體中斷是照向量表跳的；記在旁邊的話，DMAC 完成中斷永遠找不到處理常式，
+// 而遊戲會停在「等 PCM 播完」的迴圈裡不動（`docs/findings/007`）。
+//
+// 0x100 以上是 Human68k 自己的號碼（`_INTVCS` 那一段），沒有對應的
+// 硬體向量，記在表裡就好。
 func iocsBIntvcs(m *Machine) error {
 	num := uint16(m.CPU.State.D[1])
+	addr := m.CPU.State.A[1]
+	if num < 0x100 {
+		old, err := m.readLong(uint32(num) * 4)
+		if err != nil {
+			return err
+		}
+		if err := m.writeLong(uint32(num)*4, addr); err != nil {
+			return err
+		}
+		m.SetResult(old)
+		return nil
+	}
 	if m.Vectors == nil {
 		m.Vectors = map[uint16]uint32{}
 	}
 	old := m.Vectors[num]
-	m.Vectors[num] = m.CPU.State.A[1]
+	m.Vectors[num] = addr
 	m.SetResult(old)
 	return nil
 }

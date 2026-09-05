@@ -11,6 +11,11 @@ const (
 	GVRAMSize = 0x200000 // 2 MB
 	TVRAMBase = 0xE00000
 	TVRAMSize = 0x080000 // 512 KB＝四個平面各 128 KB
+
+	// 調色盤與視訊控制器：0xE82000 起。這一段是**讀得回來的暫存器檔**，
+	// 不是只寫的埠——畫面要重建就得讀它，所以用真的記憶體backing。
+	PaletteBase = 0xE82000
+	PaletteSize = 0x000400 // 圖形 256 色 ＋ 文字 16 色 ＋ 視訊控制器
 )
 
 // DefaultRAMSize 是預設主記憶體大小（2 MB）。
@@ -101,6 +106,7 @@ type Bus struct {
 	RAM      []byte
 	GVRAM    []byte
 	TVRAM    []byte
+	Palette  []byte
 	StrictIO bool
 
 	// LatchIO：把還沒實作的周邊暫存器當成單純的閂鎖（寫什麼就讀得回什麼）。
@@ -114,6 +120,10 @@ type Bus struct {
 
 	// PC 由 Machine 在每一步之前更新，讓記帳知道是誰做的。
 	PC uint32
+
+	// OnRegisterWrite 讓上層攔一個位元組寫入（DMAC 那類有副作用的暫存器）。
+	// 回傳 true 表示已經處理掉了。
+	OnRegisterWrite func(addr uint32, v byte) bool
 
 	// StopOn 裡的位址一被碰到就回錯誤讓執行停下。
 	// 用途是「我要看它是怎麼走到這個暫存器的」——停下來時軌跡還在。
@@ -133,7 +143,8 @@ func NewBus(ramSize int) *Bus {
 	return &Bus{
 		RAM:   make([]byte, ramSize),
 		GVRAM: make([]byte, GVRAMSize),
-		TVRAM: make([]byte, TVRAMSize),
+		TVRAM:   make([]byte, TVRAMSize),
+		Palette: make([]byte, PaletteSize),
 		CRTC:  NewCRTC(),
 		latch: map[uint32]byte{},
 		io:    map[uint64]*IOAccess{},
@@ -150,6 +161,8 @@ func (b *Bus) resolve(addr uint32, size uint32) (mem []byte, off uint32, mainRAM
 		return b.GVRAM, addr - GVRAMBase, false, true
 	case addr >= TVRAMBase && addr+size <= TVRAMBase+TVRAMSize:
 		return b.TVRAM, addr - TVRAMBase, false, true
+	case addr >= PaletteBase && addr+size <= PaletteBase+PaletteSize:
+		return b.Palette, addr - PaletteBase, false, true
 	}
 	return nil, 0, false, false
 }
@@ -252,6 +265,9 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 	b.note(a, true, 1)
 	if err := b.stop(a); err != nil {
 		return err
+	}
+	if b.OnRegisterWrite != nil && b.OnRegisterWrite(a, value) {
+		return nil
 	}
 	if b.LatchIO {
 		b.latch[a] = value
