@@ -88,8 +88,9 @@ type Machine struct {
 	// CRTMode 是 _CRTMOD 設的畫面模式；ScreenUse 是 _TGUSEMD 登記的使用狀態。
 	CRTMode   uint16
 	TVControl []uint32
-	// VPage 是 _VPAGE 設的圖形顯示頁。
-	VPage byte
+	// VPage 是 _VPAGE 設的圖形顯示頁；PaintPixels 是 _PAINT 塗過幾個像素。
+	VPage       byte
+	PaintPixels int
 	ScreenUse map[byte]byte
 
 	services map[string]*Service

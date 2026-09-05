@@ -147,10 +147,15 @@ type Bus struct {
 	Cycles uint64
 
 	// TVRAMWriteAt 是最後一次寫 text VRAM 的週期數，TVRAMWrites 是次數。
-	// 用來判斷「畫面畫完了沒」——比每隔幾步去雜湊 128 KB 便宜得多，
-	// 也精準得多（它記的是真的有沒有人動過畫面）。
 	TVRAMWriteAt uint64
 	TVRAMWrites  uint64
+
+	// tvramChanged 記「值真的變了」的位址。
+	//
+	// 只看「有沒有人寫」不夠：**游標會一直閃**，每隔零點幾秒就重寫同一塊
+	// 8×16，於是畫面永遠不會「靜下來」。改成數「有幾個位址的值真的變了」，
+	// 游標那 16 個 byte 就與整頁重繪分得開（`docs/findings/011`）。
+	tvramChanged map[uint32]bool
 
 	latch map[uint32]byte
 	io    map[uint64]*IOAccess
@@ -164,7 +169,8 @@ func NewBus(ramSize int) *Bus {
 		TVRAM:   make([]byte, TVRAMSize),
 		Palette: make([]byte, PaletteSize),
 		CRTC:  NewCRTC(),
-		latch: map[uint32]byte{},
+		latch:        map[uint32]byte{},
+		tvramChanged: map[uint32]bool{},
 		io:    map[uint64]*IOAccess{},
 	}
 }
@@ -185,6 +191,16 @@ func (b *Bus) resolve(addr uint32, size uint32) (mem []byte, off uint32, mainRAM
 		return b.CGROM, addr - CGROMBase, false, true
 	}
 	return nil, 0, false, false
+}
+
+// TakeTVRAMChanges 回傳「上次呼叫之後有幾個 text VRAM 位址的值真的變了」，
+// 並把計數歸零。
+func (b *Bus) TakeTVRAMChanges() int {
+	n := len(b.tvramChanged)
+	if n > 0 {
+		b.tvramChanged = map[uint32]bool{}
+	}
+	return n
 }
 
 // IO 回傳所有記到的 I/O 存取，依第一次出現的順序。
@@ -280,6 +296,9 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 			b.note(a, true, 1)
 			if a >= TVRAMBase && a < TVRAMBase+TVRAMSize {
 				b.TVRAMWriteAt, b.TVRAMWrites = b.Cycles, b.TVRAMWrites+1
+				if mem[off] != value {
+					b.tvramChanged[a] = true
+				}
 			}
 		}
 		if b.Watch != nil && b.Watch[a] {
@@ -315,6 +334,12 @@ func (b *Bus) WriteWord(address uint32, value uint16, _ uint8) error {
 			b.note(a, true, 2)
 			if a >= TVRAMBase && a < TVRAMBase+TVRAMSize {
 				b.TVRAMWriteAt, b.TVRAMWrites = b.Cycles, b.TVRAMWrites+1
+				if mem[off] != byte(value>>8) {
+					b.tvramChanged[a] = true
+				}
+				if mem[off+1] != byte(value) {
+					b.tvramChanged[a+1] = true
+				}
 			}
 		}
 		if b.Watch != nil && (b.Watch[a] || b.Watch[a+1]) {

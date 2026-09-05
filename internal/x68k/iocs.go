@@ -20,6 +20,7 @@ func (m *Machine) InstallIOCS() {
 	m.IOCSCalls[0x20] = iocsBPutc
 	m.IOCSCalls[0x2E] = iocsBConsol
 	m.IOCSCalls[0xB2] = iocsVpage
+	m.IOCSCalls[0xBC] = iocsPaint
 	m.IOCSCalls[0xF0] = iocsOpmdrv
 }
 

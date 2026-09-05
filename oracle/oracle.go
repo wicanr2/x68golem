@@ -194,36 +194,85 @@ func (o *Oracle) RandLog() []uint32 { return o.m.RNG.Log }
 func (o *Oracle) Snapshot() *x68k.Snapshot { return o.m.Snapshot() }
 func (o *Oracle) Restore(s *x68k.Snapshot) { o.m.Restore(s) }
 
-// WaitSettled 跑到文字畫面「靜下來」為止：連續 settle 個 CPU 週期沒有人
-// 寫過 text VRAM。
+// WaitSettled 跑到文字畫面「有反應而且畫完了」為止。
 //
-// **這比「每個按鍵之間固定等 N 個週期」可靠得多。** 固定延遲的問題是
-// 畫面畫多久不由我們決定：等太短，按鍵會落在上一個提示上，整串序列
-// 從此錯位（一次實測就是這樣——送給「電腦強度」的 5 掉進「幾人遊戲」，
-// 後面全歪）；等太長，一次跑要幾十分鐘。
+// 兩個階段，缺一不可：
 //
-// 判準用的是「有沒有人寫 text VRAM」而不是「畫面雜湊有沒有變」：
-// 前者是真的訊號，後者要每隔幾步去雜湊 128 KB。
-func (o *Oracle) WaitSettled(settle uint64, max int) error {
+//  1. **先等畫面有反應**：累計變動的位址數要超過 minChanged。
+//  2. **再等它畫完**：連續兩個觀察窗的變動都少於游標那一塊。
+//
+// 少了第一階段會誤判：按下鍵之後畫面先被清空，接著從磁碟讀下一頁——
+// 那段時間**沒有人寫 VRAM**，於是「靜下來」立刻成立，下一個鍵就送進
+// 一片全黑的畫面裡不見了。實測就是這樣：第 4 步存下來的截圖整張全黑，
+// 那一鍵等於丟掉，後面整串序列錯位（`docs/findings/011`）。
+//
+// 判準都用「有幾個 text VRAM 位址的值**真的變了**」：
+//
+//   - 不用「有沒有人寫」——游標會一直閃，重寫同一塊 8×16。
+//   - 不用「畫面雜湊有沒有變」——那要每隔幾步雜湊 128 KB，
+//     而且取樣之間的變化看不到。
+//   - 不用固定延遲——那是在猜對方要多久。
+// ResetScreenChanges 把「畫面變動」的計數歸零。
+//
+// **要在送出按鍵之前呼叫**，不是在 WaitSettled 裡面：按鍵送出去之後
+// 畫面可能馬上就畫完了，如果等到 WaitSettled 才歸零，那一批變動就被丟掉，
+// 於是「等畫面有反應」永遠等不到。實測就是這樣——第 1 鍵之前累計變動 0。
+func (o *Oracle) ResetScreenChanges() { o.m.Bus.TakeTVRAMChanges() }
+
+// ScreenWindowLog 若非 nil，WaitSettled 每個觀察窗都會回報變動了幾個位址。
+// 調參數用——「畫面到底靜了沒」是一個數字，不是感覺。
+var ScreenWindowLog func(window int, changed int)
+
+func (o *Oracle) WaitSettled(window uint64, minChanged, max int) error {
+	// 閃爍游標在等輸入時的穩態變動量。**量出來的是 48，不是推出來的**：
+	// `-verbose` 印每個觀察窗的變動數，等輸入時連續幾十個窗都是 48。
+	// 一開始照「8×16 ＝ 16 個 byte」推成 40，於是永遠等不到「靜下來」。
+	// 留兩倍餘裕。
+	const cursorBytes = 96
+	if window == 0 {
+		window = 2_000_000
+	}
+	changed, quiet, windowSeq := 0, 0, 0
+	next := o.m.Cycles() + window
 	for i := 0; i < max; i++ {
-		if o.m.Cycles() > o.m.Bus.TVRAMWriteAt+settle && o.m.Bus.TVRAMWrites > 0 {
-			return nil
-		}
 		if err := o.m.Step(); err != nil {
 			return err
 		}
+		if o.m.Cycles() < next {
+			continue
+		}
+		next = o.m.Cycles() + window
+		n := o.m.Bus.TakeTVRAMChanges()
+		changed += n
+		if ScreenWindowLog != nil {
+			windowSeq++
+			ScreenWindowLog(windowSeq, n)
+		}
+		if changed < minChanged {
+			quiet = 0
+			continue
+		}
+		if n < cursorBytes {
+			quiet++
+			if quiet >= 2 {
+				return nil
+			}
+		} else {
+			quiet = 0
+		}
 	}
-	return fmt.Errorf("跑滿 %d 道指令，畫面仍然沒有靜下來（最後一次寫 text VRAM 在第 %d 個週期，現在是 %d）",
-		max, o.m.Bus.TVRAMWriteAt, o.m.Cycles())
+	return fmt.Errorf("跑滿 %d 道指令：累計變動 %d 個位址（要 %d 個），畫面沒有畫完",
+		max, changed, minChanged)
 }
 
 // TypeSettled 依序送出每一個按鍵，每一個都等畫面靜下來之後才送下一個。
 // 這是把一串操作變成可重現序列的方法——**不靠猜每個畫面要畫多久**。
 func (o *Oracle) TypeSettled(keys string, settle uint64, maxPerKey int) error {
 	for _, r := range []byte(keys) {
-		if err := o.WaitSettled(settle, maxPerKey); err != nil {
+		if err := o.WaitSettled(settle, 64, maxPerKey); err != nil {
 			return err
 		}
+		o.ResetScreenChanges()
 		o.m.Keys.PushString(string(r))
 		// 送出去之後至少跑到它被讀走，否則下一輪的「靜下來」會立刻成立。
 		if err := o.Run(200_000); err != nil {
