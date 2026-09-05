@@ -193,3 +193,42 @@ func (o *Oracle) RandLog() []uint32 { return o.m.RNG.Log }
 // 才有的能力。對拍時「同一個盤面、換一個變數」因此不必重跑一次開機。
 func (o *Oracle) Snapshot() *x68k.Snapshot { return o.m.Snapshot() }
 func (o *Oracle) Restore(s *x68k.Snapshot) { o.m.Restore(s) }
+
+// WaitSettled 跑到文字畫面「靜下來」為止：連續 settle 個 CPU 週期沒有人
+// 寫過 text VRAM。
+//
+// **這比「每個按鍵之間固定等 N 個週期」可靠得多。** 固定延遲的問題是
+// 畫面畫多久不由我們決定：等太短，按鍵會落在上一個提示上，整串序列
+// 從此錯位（一次實測就是這樣——送給「電腦強度」的 5 掉進「幾人遊戲」，
+// 後面全歪）；等太長，一次跑要幾十分鐘。
+//
+// 判準用的是「有沒有人寫 text VRAM」而不是「畫面雜湊有沒有變」：
+// 前者是真的訊號，後者要每隔幾步去雜湊 128 KB。
+func (o *Oracle) WaitSettled(settle uint64, max int) error {
+	for i := 0; i < max; i++ {
+		if o.m.Cycles() > o.m.Bus.TVRAMWriteAt+settle && o.m.Bus.TVRAMWrites > 0 {
+			return nil
+		}
+		if err := o.m.Step(); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("跑滿 %d 道指令，畫面仍然沒有靜下來（最後一次寫 text VRAM 在第 %d 個週期，現在是 %d）",
+		max, o.m.Bus.TVRAMWriteAt, o.m.Cycles())
+}
+
+// TypeSettled 依序送出每一個按鍵，每一個都等畫面靜下來之後才送下一個。
+// 這是把一串操作變成可重現序列的方法——**不靠猜每個畫面要畫多久**。
+func (o *Oracle) TypeSettled(keys string, settle uint64, maxPerKey int) error {
+	for _, r := range []byte(keys) {
+		if err := o.WaitSettled(settle, maxPerKey); err != nil {
+			return err
+		}
+		o.m.Keys.PushString(string(r))
+		// 送出去之後至少跑到它被讀走，否則下一輪的「靜下來」會立刻成立。
+		if err := o.Run(200_000); err != nil {
+			return err
+		}
+	}
+	return nil
+}

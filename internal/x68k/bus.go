@@ -146,6 +146,12 @@ type Bus struct {
 	// Cycles 由 Machine 更新，讓需要時間的周邊有時間可用。
 	Cycles uint64
 
+	// TVRAMWriteAt 是最後一次寫 text VRAM 的週期數，TVRAMWrites 是次數。
+	// 用來判斷「畫面畫完了沒」——比每隔幾步去雜湊 128 KB 便宜得多，
+	// 也精準得多（它記的是真的有沒有人動過畫面）。
+	TVRAMWriteAt uint64
+	TVRAMWrites  uint64
+
 	latch map[uint32]byte
 	io    map[uint64]*IOAccess
 	order []*IOAccess
@@ -272,6 +278,9 @@ func (b *Bus) WriteByte(address uint32, value byte, _ uint8) error {
 	if mem, off, mainRAM, ok := b.resolve(a, 1); ok {
 		if !mainRAM {
 			b.note(a, true, 1)
+			if a >= TVRAMBase && a < TVRAMBase+TVRAMSize {
+				b.TVRAMWriteAt, b.TVRAMWrites = b.Cycles, b.TVRAMWrites+1
+			}
 		}
 		if b.Watch != nil && b.Watch[a] {
 			b.OnWatch(a, uint32(value), 1, b.PC)
@@ -304,6 +313,9 @@ func (b *Bus) WriteWord(address uint32, value uint16, _ uint8) error {
 	if mem, off, mainRAM, ok := b.resolve(a, 2); ok {
 		if !mainRAM {
 			b.note(a, true, 2)
+			if a >= TVRAMBase && a < TVRAMBase+TVRAMSize {
+				b.TVRAMWriteAt, b.TVRAMWrites = b.Cycles, b.TVRAMWrites+1
+			}
 		}
 		if b.Watch != nil && (b.Watch[a] || b.Watch[a+1]) {
 			b.OnWatch(a, uint32(value), 2, b.PC)
