@@ -58,6 +58,18 @@ type Machine struct {
 	services map[string]*Service
 	order    []*Service
 	steps    uint64
+
+	// trace 是最近 N 道指令的環狀緩衝（PC ＋ 指令字）。
+	// 停在一個沒實作的服務上時，「它是怎麼走到這裡的」比什麼都重要。
+	trace    []TracePoint
+	traceCap int
+	traceN   int
+}
+
+// TracePoint 是軌跡上的一點。
+type TracePoint struct {
+	PC     uint32
+	Opcode uint16
 }
 
 // NewMachine 建一台機器並把 image 載進去。
@@ -120,6 +132,28 @@ func (m *Machine) resume(pc uint32) error {
 	return nil
 }
 
+// SetTraceDepth 打開指令軌跡（0 表示關掉）。
+func (m *Machine) SetTraceDepth(n int) {
+	m.traceCap = n
+	m.trace = nil
+	m.traceN = 0
+	if n > 0 {
+		m.trace = make([]TracePoint, n)
+	}
+}
+
+// Trace 回傳最近的軌跡，最舊的在前面。
+func (m *Machine) Trace() []TracePoint {
+	if m.traceCap == 0 || m.traceN == 0 {
+		return nil
+	}
+	if m.traceN < m.traceCap {
+		return append([]TracePoint(nil), m.trace[:m.traceN]...)
+	}
+	i := m.traceN % m.traceCap
+	return append(append([]TracePoint(nil), m.trace[i:]...), m.trace[:i]...)
+}
+
 // Steps 是已經執行的指令數。
 func (m *Machine) Steps() uint64 { return m.steps }
 
@@ -157,6 +191,10 @@ func (m *Machine) Step() error {
 		return nil
 	}
 	m.Bus.PC = m.CPU.State.PC - 4
+	if m.traceCap > 0 {
+		m.trace[m.traceN%m.traceCap] = TracePoint{PC: m.Bus.PC, Opcode: m.CPU.State.Prefetch[0]}
+		m.traceN++
+	}
 	if _, err := m.CPU.Step(); err != nil {
 		return fmt.Errorf("PC=0x%06X：%w", m.Bus.PC, err)
 	}

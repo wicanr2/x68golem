@@ -27,6 +27,7 @@ func main() {
 		zPath    = flag.String("z", "", "Human68k `.Z` 執行檔（玩家自備）")
 		maxSteps = flag.Uint64("steps", 50_000_000, "最多執行幾道指令")
 		ram      = flag.Int("ram", x68k.DefaultRAMSize, "主記憶體大小（bytes）")
+		trace = flag.Int("trace", 0, "停下來時印出最後 N 道指令與暫存器")
 		lenient = flag.Bool("lenient", false,
 			"沒實作的 I/O 與服務一律回 0 繼續跑（產出只能當線索，不能當事實）")
 	)
@@ -57,6 +58,7 @@ func main() {
 	}
 	m.Bus.StrictIO = !*lenient
 	m.LenientServices = *lenient
+	m.SetTraceDepth(*trace)
 
 	var stopErr error
 	for m.Steps() < *maxSteps {
@@ -77,6 +79,22 @@ func main() {
 		fmt.Println("\n⚠ -lenient：沒實作的一律回 0。程式會依回傳值分支，" +
 			"所以以下清單只能當「還有哪些服務存在」的線索，不能當事實——" +
 			"可能少（走錯路沒碰到），也可能多（走進正常情況不會進的錯誤處理）。")
+	}
+
+	if tp := m.Trace(); len(tp) > 0 {
+		fmt.Printf("\n== 停下來之前的最後 %d 道指令\n", len(tp))
+		for _, t := range tp {
+			fmt.Printf("  0x%06X  %04X\n", t.PC, t.Opcode)
+		}
+		st := m.CPU.State
+		fmt.Println("== 暫存器")
+		for i := 0; i < 8; i++ {
+			fmt.Printf("  D%d = 0x%08X\n", i, st.D[i])
+		}
+		for i := 0; i < 7; i++ {
+			fmt.Printf("  A%d = 0x%08X\n", i, st.A[i])
+		}
+		fmt.Printf("  USP = 0x%08X  SSP = 0x%08X  SR = 0x%04X\n", st.USP, st.SSP, st.SR)
 	}
 
 	svcs := m.SortedServices()
