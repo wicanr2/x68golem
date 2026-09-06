@@ -781,3 +781,54 @@ func WriteGeneralTable(o *oracle.Oracle, recs []GenRec) error {
 	}
 	return nil
 }
+
+const (
+	// RulerFlagsOff 是君主記錄的旗標（bit0 玩家、bit1 放浪中、bit2 持玉璽）。
+	RulerFlagsOff = 1
+	RulerEnmity   = 0x0A // 敵対心陣列，索引 `對方君主 − 1`
+	GenTroops     = 0x20 // 武將主表的兵數（long）
+
+	NationForce = 0x611E6 // sub_611E6(N, ruler)：ruler 在 N 的兵數合計
+	PickWar     = 0x5B00E // sub_5B00E()：選進攻目標（本國取自 CurNation）
+)
+
+// RulerRec 是君主表的一筆（只寫戰略層讀得到的欄位）。
+type RulerRec struct {
+	No      byte
+	Flags   byte
+	Enmity  []byte // 對每一位君主的敵対心，索引 0 ＝ 君主 1
+	Deploy  bool   // 保留：目前用不到
+}
+
+// Write 先整筆清 0 再寫欄位。
+func (r RulerRec) Write(o *oracle.Oracle) error {
+	a := uint32(RulerTable) + uint32(r.No-1)*RulerStride
+	for i := uint32(0); i < RulerStride; i++ {
+		if err := o.SetByte(a+i, 0); err != nil {
+			return err
+		}
+	}
+	if err := o.SetByte(a+RulerFlagsOff, r.Flags); err != nil {
+		return err
+	}
+	for i, v := range r.Enmity {
+		if err := o.SetByte(a+RulerEnmity+uint32(i), v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetNationMoney 寫國記錄的金與米（`sub_5B00E` 的守備力用得到）。
+func SetNationMoney(o *oracle.Oracle, no byte, gold, rice uint32) error {
+	a := uint32(NationTable) + uint32(no-1)*NationStride
+	if err := o.SetLong(a+4, gold); err != nil {
+		return err
+	}
+	return o.SetLong(a+8, rice)
+}
+
+// SetGeneralTroops 寫某一筆武將的兵數（`+0x20`）。
+func SetGeneralTroops(o *oracle.Oracle, index int, troops uint32) error {
+	return o.SetLong(uint32(GeneralTable)+uint32(index)*GeneralStride+GenTroops, troops)
+}

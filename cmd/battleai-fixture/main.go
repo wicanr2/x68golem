@@ -313,6 +313,25 @@ type pathCase struct {
 	Hops    [][3]int `json:"hops"` // {from, to, 下一站國號（0 ＝ 到不了）}
 }
 
+// warCase 是「選進攻目標」`sub_5B00E` 的一次判定，連同它用到的兵數合計。
+type warCase struct {
+	Owner    []int   `json:"owner"`
+	War      []int   `json:"war"`
+	Gold     []int   `json:"gold"`
+	Rice     []int   `json:"rice"`
+	Adjacent [][]int `json:"adjacent"`
+	GenNat   []int   `json:"genNat"`
+	GenLord  []int   `json:"genLord"`
+	GenTroop []int   `json:"genTroop"`
+	Enmity   [][]int `json:"enmity"` // 每位君主對每位君主的敵対心
+	Human    []bool  `json:"human"`  // 君主表 +1 bit0
+	Seal     []bool  `json:"seal"`   // 君主表 +1 bit2（玉璽）
+	CPU      int     `json:"cpu"`    // 電腦の強さ
+	From     int     `json:"from"`   // 本國
+	Force    []int   `json:"force"`  // sub_611E6(N, N.君主) 逐國
+	Target   int     `json:"target"` // sub_5B00E 選中的國號（0 ＝ 沒有）
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -335,6 +354,7 @@ type fixture struct {
 	Evade       []evadeCase   `json:"evade"`
 	Strategy    []strategyCase `json:"strategy"`
 	Path        []pathCase     `json:"path"`
+	War         []warCase      `json:"war"`
 }
 
 func main() {
@@ -352,6 +372,7 @@ func main() {
 	evades := flag.Int("evades", 200, "走避場的案例數")
 	strats := flag.Int("strategy", 200, "戰略層的案例數")
 	paths := flag.Int("paths", 60, "武將計數與尋路的案例數")
+	wars := flag.Int("wars", 200, "選進攻目標的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -518,6 +539,9 @@ func main() {
 	// ── 武將計數與尋路 sub_60E66／sub_618A4／sub_5A804 ─────────────────
 	f.Path = pathCases(o, rng, *paths)
 
+	// ── 選進攻目標 sub_5B00E ──────────────────────────────────────────
+	f.War = warCases(o, rng, *wars)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -528,8 +552,9 @@ func main() {
 	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
 		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
 		len(f.Assign), len(f.Targets))
-	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d、戰略層 %d、尋路 %d\n",
-		len(f.Advance), len(f.Round), len(f.Evade), len(f.Strategy), len(f.Path))
+	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d、戰略層 %d、尋路 %d、選目標 %d\n",
+		len(f.Advance), len(f.Round), len(f.Evade), len(f.Strategy),
+		len(f.Path), len(f.War))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -1977,6 +2002,116 @@ func pathCases(o *oracle.Oracle, rng *rand.Rand, n int) []pathCase {
 				no = int(v-uint32(sangokushi.NationTable))/sangokushi.NationStride + 1
 			}
 			c.Hops = append(c.Hops, [3]int{from, to, no})
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// warCases 問原版「這一國這個月要打誰」。
+//
+// `sub_5B00E` 沒有亂數：兩把鍵（敵対心、守備力）都從國表、君主表與武將表算出來，
+// 全部由記憶體擺出來就決定了答案。
+func warCases(o *oracle.Oracle, rng *rand.Rand, n int) []warCase {
+	// **58 國全部要寫**。`sub_5B00E` 掃的是整張國表，只寫前 14 筆的話
+	// 後面 44 筆會留著 `.Z` 映像裡的真實資料，原版就會選到那裡去
+	// （第一次跑就抓到：原版回 21、44、55 這些根本沒擺的國號）。
+	const nations, rulers = 58, 5
+	// 前幾批在這幾支上裝過會略過原函式的攔截點，這一批要它們真的跑。
+	for _, a := range []uint32{sangokushi.GensOfLord, sangokushi.NationForce} {
+		o.Intercept(a, func(*x68k.Frame) (uint32, bool) { return 0, false })
+	}
+	out := make([]warCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := warCase{
+			Owner: make([]int, nations), War: make([]int, nations),
+			Gold: make([]int, nations), Rice: make([]int, nations),
+			Adjacent: make([][]int, nations),
+			GenNat:   make([]int, sangokushi.GeneralCount),
+			GenLord:  make([]int, sangokushi.GeneralCount),
+			GenTroop: make([]int, sangokushi.GeneralCount),
+			Enmity:   make([][]int, rulers),
+			Human:    make([]bool, rulers), Seal: make([]bool, rulers),
+			Force: make([]int, nations),
+			CPU:   1 + rng.Intn(10),
+			From:  1 + rng.Intn(nations),
+		}
+		for k := 0; k < nations; k++ {
+			c.Owner[k] = rng.Intn(rulers + 1)
+			c.War[k] = rng.Intn(rulers + 1)
+			if rng.Intn(2) == 0 {
+				c.War[k] = 0
+			}
+			c.Gold[k] = rng.Intn(3) * rng.Intn(9000) // 三分之一機率沒錢
+			c.Rice[k] = rng.Intn(9000)
+			for j := 0; j < 4; j++ {
+				t := 1 + rng.Intn(nations)
+				if t != k+1 {
+					c.Adjacent[k] = append(c.Adjacent[k], t)
+				}
+			}
+		}
+		if c.Owner[c.From-1] == 0 {
+			c.Owner[c.From-1] = 1
+		}
+		for r := 0; r < rulers; r++ {
+			c.Enmity[r] = make([]int, rulers)
+			for t := 0; t < rulers; t++ {
+				c.Enmity[r][t] = rng.Intn(101)
+			}
+			c.Human[r] = rng.Intn(4) == 0
+			c.Seal[r] = rng.Intn(5) == 0
+		}
+		var recs []sangokushi.GenRec
+		for k := 0; k < sangokushi.GeneralCount; k++ {
+			if rng.Intn(3) != 0 {
+				continue
+			}
+			c.GenNat[k] = 1 + rng.Intn(nations)
+			c.GenLord[k] = 1 + rng.Intn(rulers)
+			c.GenTroop[k] = rng.Intn(9000)
+			recs = append(recs, sangokushi.GenRec{Index: k,
+				Nation: byte(c.GenNat[k]), Lord: byte(c.GenLord[k])})
+		}
+		die(sangokushi.WriteGeneralTable(o, recs))
+		for _, r := range recs {
+			die(sangokushi.SetGeneralTroops(o, r.Index, u32(c.GenTroop[r.Index])))
+		}
+		for k := 0; k < nations; k++ {
+			adj := make([]byte, len(c.Adjacent[k]))
+			for j, t := range c.Adjacent[k] {
+				adj[j] = byte(t)
+			}
+			die(sangokushi.NationRec{No: byte(k + 1), Owner: byte(c.Owner[k]),
+				War: byte(c.War[k]), Adjacent: adj}.Write(o))
+			die(sangokushi.SetNationMoney(o, byte(k+1), u32(c.Gold[k]), u32(c.Rice[k])))
+		}
+		for r := 0; r < rulers; r++ {
+			en := make([]byte, rulers)
+			for t := 0; t < rulers; t++ {
+				en[t] = byte(c.Enmity[r][t])
+			}
+			var fl byte
+			if c.Human[r] {
+				fl |= 0x01
+			}
+			if c.Seal[r] {
+				fl |= 0x04
+			}
+			die(sangokushi.RulerRec{No: byte(r + 1), Flags: fl, Enmity: en}.Write(o))
+		}
+		die(o.SetLong(sangokushi.Difficulty, u32(c.CPU)))
+		die(o.SetLong(sangokushi.CurNation, sangokushi.NationRec{No: byte(c.From)}.Addr()))
+		for k := 0; k < nations; k++ {
+			addr := sangokushi.NationRec{No: byte(k + 1)}.Addr()
+			v, err := o.Call(sangokushi.NationForce, addr, u32(c.Owner[k]))
+			die(err)
+			c.Force[k] = int(int32(v))
+		}
+		v, err := o.Call(sangokushi.PickWar)
+		die(err)
+		if v != 0 {
+			c.Target = int(v-uint32(sangokushi.NationTable))/sangokushi.NationStride + 1
 		}
 		out = append(out, c)
 	}
