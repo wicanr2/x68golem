@@ -288,6 +288,21 @@ const (
 	PanelDraw   = 0x634AA // 面板重繪
 	BattleOver  = 0x66536 // 戰鬥是否結束
 
+	// 目標選擇（AI-8 的兩個 callback 與它們共用的底層）。
+	PickTarget = 0x67968 // sub_67968(&x, &y, mode, U)：本陣或城格
+	CastleHQ   = 0x67EFE // sub_67EFE(&x, &y, U) ＝ sub_67968(…, 1, U)
+	LordCell   = 0x67EAE // sub_67EAE(&x, &y, U)：對方君主本人／総大将的格
+	BestThreat = 0x67F22 // sub_67F22(&x, &y, U)：對方單位裡 sub_6788C 最高的格
+	ThreatAt   = 0x6788C // sub_6788C(x, y, ruler)：該格周圍的地形係數和
+	MainAct    = 0x67CEC // sub_67CEC(U, x, y)：空格就走過去，有人就交單位層
+	CellUnit   = 0x64BF8 // sub_64BF8(x, y, dir)：相鄰格的單位槽指標
+	PickEnemy  = 0x666FA // sub_666FA(V, dir)：V 旁邊要打哪一個敵人
+
+	// 城格清單（`sub_64718` `0x64af6-0x64bf0` 建，`sub_645FE` 做配對）。
+	Pairing     = 0x645FE // sub_645FE(adj, depth)：最少組數的分支界限
+	CastleCells = 0x77102 // 20 bytes：城格座標對，`0xFF` 結束
+	CastlePairs = 0x77118 // 20 bytes：配對結果
+
 	// 火計相關。
 	Burnability  = 0x6533A // sub_6533A(x, y)：一格的可燃度
 	SpreadChance = 0x6542A // sub_6542A(x, y)：一格本回合的起火機率
@@ -523,4 +538,138 @@ func WriteAssignSlots(o *oracle.Oracle, base uint32, xs, ys []int, occupied []bo
 		}
 	}
 	return o.SetLong(ActingSlots, base)
+}
+
+// BuildCastleList 重現 `sub_64718` `0x64962-0x64bf0` 建城格清單那一段。
+//
+// 為什麼要在這裡重建而不是呼叫 `sub_64718`：那一支同時做整個戰場的畫面
+// 初始化（`sub_712BC` 貼圖、`sub_62FEC` 畫框），無頭跑不起來。這裡只搬
+// 「掃城格 → 建鄰接表 → `sub_645FE` 配對 → 展開成座標」那四步，
+// **配對那一步（分支界限）是呼叫原版自己的 `sub_645FE`**——會算錯的地方在那裡。
+//
+// adj 是 60 bytes 的暫存（10 格 × 6 方向）。
+func BuildCastleList(o *oracle.Oracle, adj, scratch uint32) error {
+	// 1. 掃出城格（工作副本的 `cell == 0x20`），y 外 x 內。
+	var xs, ys []int
+	for y := 0; y < BattleRows; y++ {
+		for x := 0; x < TerrainCols; x++ {
+			v, err := o.Byte(Terrain + uint32(y*TerrainCols+x))
+			if err != nil {
+				return err
+			}
+			if v == 0x20 && len(xs) < 10 {
+				xs, ys = append(xs, x), append(ys, y)
+			}
+		}
+	}
+	// 2. 鄰接表：adj[i*6 + dir-1] = j+1（第 j 個城格在那個方向）。
+	for i := 0; i < 10; i++ {
+		for k := 0; k < 6; k++ {
+			if err := o.SetByte(adj+uint32(i*6+k), 0); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range xs {
+		for dir := 1; dir <= 6; dir++ {
+			nx, ny, ok, err := CallNeighbour(o, scratch, xs[i], ys[i], dir)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			for j := range xs {
+				if xs[j] == nx && ys[j] == ny {
+					if err := o.SetByte(adj+uint32(i*6+dir-1), byte(j+1)); err != nil {
+						return err
+					}
+					break
+				}
+			}
+		}
+	}
+	// 沒用到的列標 0x80（`sub_6459A` 用 bit7 當「已處理」）。
+	for i := len(xs); i < 10; i++ {
+		if err := o.SetByte(adj+uint32(i*6), 0x80); err != nil {
+			return err
+		}
+	}
+	// 3. 配對：`0x7712C` 是「目前最好的組數」，初值 11。
+	for i := uint32(0); i < 20; i++ {
+		if err := o.SetByte(CastleCells+i, 0); err != nil {
+			return err
+		}
+		if err := o.SetByte(CastlePairs+i, 0); err != nil {
+			return err
+		}
+	}
+	if err := o.SetLong(CastleGroups, 11); err != nil {
+		return err
+	}
+	if _, err := o.Call(Pairing, adj, 0); err != nil {
+		return err
+	}
+	if len(xs) == 0 {
+		return o.SetByte(CastleCells, 0xFF)
+	}
+	// 4. 展開：先把每一組的「另一半」接在 `2×組數` 之後，再把索引換成座標。
+	groups, err := o.Long(CastleGroups)
+	if err != nil {
+		return err
+	}
+	raw := make([]byte, 20)
+	for i := range raw {
+		if raw[i], err = o.Byte(CastleCells + uint32(i)); err != nil {
+			return err
+		}
+	}
+	seq := make([]byte, 0, 20)
+	seq = append(seq, raw[:2*groups]...)
+	for k := 0; k < 10; k++ {
+		if raw[2*k+1] != 0 {
+			seq = append(seq, raw[2*k+1], raw[2*k])
+		}
+	}
+	for k := 0; k < len(xs); k++ {
+		i1, i2 := int(seq[2*k]), int(seq[2*k+1])
+		if err := o.SetByte(CastleCells+uint32(2*k), byte(xs[i1-1])); err != nil {
+			return err
+		}
+		if err := o.SetByte(CastleCells+uint32(2*k+1), byte(ys[i1-1])); err != nil {
+			return err
+		}
+		px, py := byte(0xFF), byte(0xFF)
+		if i2 != 0 {
+			px, py = byte(xs[i2-1]), byte(ys[i2-1])
+		}
+		if err := o.SetByte(CastlePairs+uint32(2*k), px); err != nil {
+			return err
+		}
+		if err := o.SetByte(CastlePairs+uint32(2*k+1), py); err != nil {
+			return err
+		}
+	}
+	return o.SetByte(CastleCells+uint32(2*len(xs)), 0xFF)
+}
+
+// ReadCastleList 取回 `0x77102`／`0x77118` 的 20 bytes 與組數。
+func ReadCastleList(o *oracle.Oracle) (cells, pairs []int, groups int, err error) {
+	cells, pairs = make([]int, 20), make([]int, 20)
+	for i := 0; i < 20; i++ {
+		c, e := o.Byte(CastleCells + uint32(i))
+		if e != nil {
+			return nil, nil, 0, e
+		}
+		p, e := o.Byte(CastlePairs + uint32(i))
+		if e != nil {
+			return nil, nil, 0, e
+		}
+		cells[i], pairs[i] = int(c), int(p)
+	}
+	g, e := o.Long(CastleGroups)
+	if e != nil {
+		return nil, nil, 0, e
+	}
+	return cells, pairs, int(int32(g)), nil
 }

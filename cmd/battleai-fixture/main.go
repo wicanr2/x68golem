@@ -24,7 +24,9 @@ import (
 	"os"
 
 	"github.com/wicanr2/x68golem/apps/sangokushi"
+	"github.com/wicanr2/x68golem/internal/x68k"
 	"github.com/wicanr2/x68golem/oracle"
+	"github.com/wicanr2/x68golem/runtime/xc"
 )
 
 // 合成盤面的位址：主記憶體 2 MB，遊戲的堆積到 0xFCA86 為止，樁在 0x1F0000 起。
@@ -39,6 +41,11 @@ const (
 	// 攔截點看的是 PC，位址上有沒有程式碼無所謂。
 	stubTarget = scratch + 0x1800
 	stubAct    = scratch + 0x1808
+	adjBuf     = scratch + 0x1810 // 城格鄰接表 60 bytes
+	defSlots   = scratch + 0x1900 // 守方十個槽（步長 0x24）
+	atkSlots   = scratch + 0x1B00 // 攻方十個槽
+	defGens    = scratch + 0x1D00 // 對應的武將記錄（步長 0x30）
+	atkGens    = scratch + 0x1F00
 	cells      = sangokushi.BattleRows * sangokushi.TerrainCols
 )
 
@@ -160,6 +167,67 @@ type assignCase struct {
 	Steps   []sangokushi.AssignStep `json:"steps"`
 }
 
+// targetCase 是「這個局面下，AI 的兩個目標各是哪一格」。
+//
+// 涵蓋 `sub_67968`（兩種 mode）、`sub_67EAE`、`sub_67F22`、`sub_6788C`，
+// 以及它們共用的城格清單 `0x77102`／`0x77118`／`0x7712C`。
+type targetCase struct {
+	Terrain string `json:"terrain"` // 168 個 0-9 字元：地形類型（4 ＝ 城格）
+	Fire    string `json:"fire"`
+	Units   string `json:"units"` // 一格一個字元：'.' 空、'a'..'j' 守方槽、'A'..'J' 攻方槽
+	HQX     int    `json:"hqx"`
+	HQY     int    `json:"hqy"`
+	Acting  string `json:"acting"` // "defender"／"attacker"
+	Lords   []int  `json:"lords"`  // 是君主本人（+0x1B bit1）的槽，0..9 守方、10..19 攻方
+	Chiefs  []int  `json:"chiefs"` // 是総大将（+0x2A bit7）的槽
+	Acted   []int  `json:"acted"`  // 機動力 0xFF（已行動）的槽
+	UX      int    `json:"ux"`     // 行動單位所在格
+	UY      int    `json:"uy"`
+	Navy    bool   `json:"navy"`
+
+	Groups int   `json:"groups"` // 0x7712C
+	Cells  []int `json:"cells"`  // 0x77102 的 20 bytes
+	Pairs  []int `json:"pairs"`  // 0x77118 的 20 bytes
+
+	Threat []int `json:"threat"` // sub_6788C(x, y, 守方君主) 逐格（168 項）
+
+	T0 [3]int `json:"t0"` // sub_67968(…, 0, U) → x, y, 有沒有找到
+	T1 [3]int `json:"t1"` // sub_67968(…, 1, U)
+	LC [3]int `json:"lc"` // sub_67EAE
+	BT [3]int `json:"bt"` // sub_67F22
+}
+
+// advCase 是「拿到目標之後怎麼動」：`sub_666FA`（挑相鄰的敵人）、
+// `sub_67C76`（推進目標的執行者）、`sub_67CEC`（主目標的執行者）。
+type advCase struct {
+	Terrain string `json:"terrain"`
+	Fire    string `json:"fire"`
+	Units   string `json:"units"`
+	Wind    int    `json:"wind"`
+	Chiefs  []int  `json:"chiefs"`
+	Acted   []int  `json:"acted"`
+	Acting  string `json:"acting"`
+	UX      int    `json:"ux"`
+	UY      int    `json:"uy"`
+	Flags   int    `json:"flags"`
+	BX      int    `json:"bx"` // 推進目標
+	BY      int    `json:"by"`
+
+	Enemy int `json:"enemy"` // sub_666FA(U, 0) 選到的槽（−1 ＝ 沒有）
+
+	// sub_67C76(U, bx, by, flags)
+	C76Kind  string `json:"c76Kind"` // "move"／"act"
+	C76X     int    `json:"c76x"`    // move：目標格
+	C76Y     int    `json:"c76y"`
+	C76Enemy int    `json:"c76Enemy"` // act：對象槽
+	C76Flags int    `json:"c76Flags"`
+
+	// sub_67CEC(U, bx, by)
+	CECKind  string `json:"cecKind"`
+	CECEnemy int    `json:"cecEnemy"`
+	CECFlags int    `json:"cecFlags"`
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -176,6 +244,8 @@ type fixture struct {
 	Policy      []policyCase  `json:"policy"`
 	Burn        []burnCase    `json:"burn"`
 	Assign      []assignCase  `json:"assign"`
+	Targets     []targetCase  `json:"targets"`
+	Advance     []advCase     `json:"advance"`
 }
 
 func main() {
@@ -187,6 +257,8 @@ func main() {
 	policies := flag.Int("policies", 400, "方針層的案例數")
 	burns := flag.Int("burns", 400, "可燃度／起火機率的案例數")
 	assigns := flag.Int("assigns", 400, "名額指派的案例數")
+	tgts := flag.Int("targets", 200, "目標選擇的案例數")
+	advs := flag.Int("advance", 400, "推進執行者的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -335,6 +407,12 @@ func main() {
 	// ── 名額指派 sub_680E8 ────────────────────────────────────────────
 	f.Assign = assignCases(o, rng, *assigns)
 
+	// ── 目標選擇 sub_67968／sub_67EAE／sub_67F22／sub_6788C ────────────
+	f.Targets = targetCases(o, rng, *tgts)
+
+	// ── 推進執行者 sub_666FA／sub_67C76／sub_67CEC ─────────────────────
+	f.Advance = advCases(o, rng, *advs)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -342,8 +420,10 @@ func main() {
 		"距離場 %d 個盤面、單位層決策 %d\n",
 		*out, len(f.HexDistance), len(f.DirCode), len(f.Supply),
 		len(f.ChargeOdds), len(f.DistField), len(f.UnitAct))
-	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d\n",
-		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn), len(f.Assign))
+	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
+		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
+		len(f.Assign), len(f.Targets))
+	fmt.Printf("        推進執行者 %d\n", len(f.Advance))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -815,6 +895,396 @@ func assignCases(o *oracle.Oracle, rng *rand.Rand, n int) []assignCase {
 			die(err)
 		}
 		c.Steps = steps
+		out = append(out, c)
+	}
+	return out
+}
+
+// targetCases 問原版「這個局面下，AI 的兩個目標各是哪一格」。
+//
+// 四支都是純函式（吃全域盤面、回一組座標），但它們共用的城格清單
+// `0x77102` 不是——那是 `sub_64718` 開場建好的。這裡用
+// `sangokushi.BuildCastleList` 重建（配對那一步呼叫原版自己的 `sub_645FE`），
+// 建完的 20 bytes 一起寫進 fixture：remake 既要能**重建同一份清單**，
+// 也要在同一份清單上選出同一格。
+func targetCases(o *oracle.Oracle, rng *rand.Rand, n int) []targetCase {
+	const defRuler, atkRuler = 3, 7
+	out := make([]targetCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := targetCase{Navy: rng.Intn(2) == 0, Acting: "defender"}
+		acting := byte(defRuler)
+		if i%2 == 1 {
+			c.Acting, acting = "attacker", byte(atkRuler)
+		}
+		terrain := make([]byte, cells)
+		fire := make([]byte, cells)
+		units := make([]byte, cells)
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(6)) // 0..5，5 是山
+			fire[j] = '0'
+			units[j] = '.'
+		}
+		for j := 0; j < 6; j++ {
+			fire[rng.Intn(cells)] = byte('0' + rng.Intn(4))
+		}
+		// 城格 1..8 個（`sub_64718` 最多收 10 個）。
+		for j := 0; j < 1+rng.Intn(8); j++ {
+			terrain[rng.Intn(cells)] = '4'
+		}
+		// 四分之一的攻方案例排成**相鄰的城格對**：`sub_67968` 的第三候選
+		// （保底）只有在「城格空著、但配對格被自己人佔住」時才用得到，
+		// 而那需要城格真的有配對。
+		pairedBoard := c.Acting == "attacker" && rng.Intn(4) == 0
+		if pairedBoard {
+			for j := range terrain {
+				if terrain[j] == '4' {
+					terrain[j] = '0'
+				}
+			}
+			for j := 0; j < 2+rng.Intn(3); j++ {
+				x, y := rng.Intn(sangokushi.TerrainCols), rng.Intn(sangokushi.BattleRows)
+				nx, ny, ok, err := sangokushi.CallNeighbour(o, scratch+0x1880, x, y, 1+rng.Intn(6))
+				die(err)
+				if !ok {
+					continue
+				}
+				terrain[y*sangokushi.TerrainCols+x] = '4'
+				terrain[ny*sangokushi.TerrainCols+nx] = '4'
+			}
+		}
+		// 本陣：一格物件碼 6（不放在城格上）。
+		for {
+			p := rng.Intn(cells)
+			if terrain[p] != '4' {
+				c.HQX, c.HQY = p%sangokushi.TerrainCols, p/sangokushi.TerrainCols
+				break
+			}
+		}
+		// 單位：兩邊各 0..10 個，不站山上。
+		// 槽 0 留給行動單位，其餘從 1 起。**一個槽只能出現在一格**——
+		// 同一個槽寫進兩格的話，原版的單位格陣列會在兩處都指到它，
+		// 而它自己的座標只有一個，盤面就自相矛盾了。
+		nextDef, nextAtk := 1, 1
+		place := func(mark byte, next *int, k int) {
+			for j := 0; j < k && *next < 10; j++ {
+				p := rng.Intn(cells)
+				if units[p] != '.' || terrain[p] == '5' {
+					continue
+				}
+				units[p] = mark + byte(*next)
+				*next++
+			}
+		}
+		place('a', &nextDef, rng.Intn(10))
+		place('A', &nextAtk, rng.Intn(10))
+		// 三分之一的案例把守方單位塞滿城格：`sub_67968` 的第二候選
+		// （守方佔著的城格裡 `sub_6788C` 最高的）只有在**沒有空城格**時才用得到，
+		// 隨機盤面幾乎踩不到，等於沒驗。
+		if !pairedBoard && rng.Intn(3) == 0 {
+			for j := range terrain {
+				if terrain[j] == '4' && units[j] == '.' && nextDef < 10 {
+					units[j] = 'a' + byte(nextDef)
+					nextDef++
+				}
+			}
+		}
+		// 配對盤面：城格上只放**攻方**（行動方）單位，而且隔一格放一個——
+		// 守方一站上去就會命中第二候選，第三候選還是驗不到。
+		if pairedBoard {
+			for j := range units {
+				if terrain[j] == '4' && units[j] >= 'a' && units[j] <= 'j' {
+					units[j] = '.'
+				}
+			}
+			k := 0
+			for j := range terrain {
+				if terrain[j] == '4' && units[j] == '.' && nextAtk < 10 {
+					if k%2 == 0 {
+						units[j] = 'A' + byte(nextAtk)
+						nextAtk++
+					}
+					k++
+				}
+			}
+		}
+		selfMark := byte('a')
+		if c.Acting == "attacker" {
+			selfMark = 'A'
+		}
+		for {
+			p := rng.Intn(cells)
+			if terrain[p] == '5' || units[p] != '.' {
+				continue
+			}
+			units[p] = selfMark
+			c.UX, c.UY = p%sangokushi.TerrainCols, p/sangokushi.TerrainCols
+			break
+		}
+		for j := 0; j < 20; j++ {
+			if rng.Intn(12) == 0 {
+				c.Lords = append(c.Lords, j)
+			}
+			if rng.Intn(12) == 0 {
+				c.Chiefs = append(c.Chiefs, j)
+			}
+			if rng.Intn(4) == 0 {
+				c.Acted = append(c.Acted, j)
+			}
+		}
+		c.Terrain, c.Fire, c.Units = string(terrain), string(fire), string(units)
+
+		self32 := writeTargetBoard(o, &c, acting)
+		die(sangokushi.BuildCastleList(o, adjBuf, scratch+0x1880))
+		cellsB, pairsB, groups, err := sangokushi.ReadCastleList(o)
+		die(err)
+		c.Cells, c.Pairs, c.Groups = cellsB, pairsB, groups
+
+		c.Threat = make([]int, cells)
+		for j := 0; j < cells; j++ {
+			v, err := o.Call(sangokushi.ThreatAt,
+				u32(j%sangokushi.TerrainCols), u32(j/sangokushi.TerrainCols), defRuler)
+			die(err)
+			c.Threat[j] = int(int32(v))
+		}
+		ask := func(addr uint32, args ...uint32) [3]int {
+			// `sub_667B0` 開頭會改 `0x770B2` 的第 3 項且不還原，
+			// 每次呼叫之前都要設回去（不然第二次算出來的距離場是錯的）。
+			die(sangokushi.ResetStepCost(o))
+			die(o.SetLong(scratch+0x1890, 0))
+			die(o.SetLong(scratch+0x1894, 0))
+			a := append([]uint32{scratch + 0x1890, scratch + 0x1894}, args...)
+			r, err := o.Call(addr, a...)
+			die(err)
+			x, err := o.Long(scratch + 0x1890)
+			die(err)
+			y, err := o.Long(scratch + 0x1894)
+			die(err)
+			return [3]int{int(int32(x)), int(int32(y)), int(int32(r))}
+		}
+		c.T0 = ask(sangokushi.PickTarget, 0, self32)
+		c.T1 = ask(sangokushi.PickTarget, 1, self32)
+		c.LC = ask(sangokushi.LordCell, self32)
+		c.BT = ask(sangokushi.BestThreat, self32)
+		out = append(out, c)
+	}
+	return out
+}
+
+// writeTargetBoard 擺盤面、兩邊各十個槽，回傳行動單位的槽位址。
+func writeTargetBoard(o *oracle.Oracle, c *targetCase, acting byte) uint32 {
+	const defRuler, atkRuler = 3, 7
+	var b sangokushi.Board
+	b.Ruler = acting
+	for j := 0; j < cells; j++ {
+		b.Terrain[j] = (c.Terrain[j] - '0') << 3
+		b.Fire[j] = c.Fire[j] - '0'
+	}
+	b.Terrain[c.HQY*sangokushi.TerrainCols+c.HQX] |= 6 // 物件碼 6 ＝ 本陣
+
+	has := func(list []int, v int) bool {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	}
+	// 兩邊各十個槽全部先清空，再依 units 字串填。
+	for k := 0; k < 10; k++ {
+		die(sangokushi.BattleUnit{Addr: defSlots + uint32(k)*sangokushi.SlotStride}.Write(o))
+		die(sangokushi.BattleUnit{Addr: atkSlots + uint32(k)*sangokushi.SlotStride}.Write(o))
+	}
+	self := uint32(0)
+	for j := 0; j < cells; j++ {
+		ch := c.Units[j]
+		if ch == '.' {
+			continue
+		}
+		var slot, gen uint32
+		var ruler byte
+		var idx int
+		if ch >= 'a' && ch <= 'j' {
+			idx = int(ch - 'a')
+			slot, gen, ruler = defSlots+uint32(idx)*sangokushi.SlotStride, defGens+uint32(idx)*0x30, defRuler
+		} else {
+			idx = 10 + int(ch-'A')
+			k := idx - 10
+			slot, gen, ruler = atkSlots+uint32(k)*sangokushi.SlotStride, atkGens+uint32(k)*0x30, atkRuler
+		}
+		g := sangokushi.General{Addr: gen, Ruler: ruler, Intelligence: 50, Strength: 50}
+		die(g.Write(o))
+		if has(c.Lords, idx) {
+			die(o.SetByte(gen+0x1B, 0x02))
+		}
+		if has(c.Chiefs, idx) {
+			die(o.SetByte(gen+0x2A, 0x80))
+		}
+		die(sangokushi.BattleUnit{Addr: slot, General: gen,
+			X: u32(j % sangokushi.TerrainCols), Y: u32(j / sangokushi.TerrainCols),
+			Troops: 1000}.Write(o))
+		mob := byte(6)
+		if has(c.Acted, idx) {
+			mob = 0xFF
+		}
+		die(sangokushi.SetMobility(o, slot, mob))
+		b.Occupy[j] = slot
+		if j == c.UY*sangokushi.TerrainCols+c.UX {
+			self = slot
+			if c.Navy {
+				die(o.SetByte(gen+0x1B, 0x01))
+			}
+		}
+	}
+	die(b.Write(o))
+	die(o.SetLong(sangokushi.DefRuler, defRuler))
+	die(o.SetLong(sangokushi.AtkRuler, atkRuler))
+	die(o.SetLong(sangokushi.ActingRuler, uint32(acting)))
+	opp := uint32(atkRuler)
+	oppSlots := uint32(atkSlots)
+	if acting == atkRuler {
+		opp, oppSlots = defRuler, defSlots
+	}
+	die(o.SetLong(sangokushi.OppRuler, opp))
+	die(o.SetLong(sangokushi.OppSlots, oppSlots))
+	die(o.SetLong(sangokushi.HQX, u32(c.HQX)))
+	die(o.SetLong(sangokushi.HQY, u32(c.HQY)))
+	die(o.SetLong(sangokushi.Wind, 0))
+	die(sangokushi.ResetStepCost(o))
+	return self
+}
+
+// advCases 問原版「拿到目標之後怎麼動」。
+//
+// `sub_67C76`（推進目標）與 `sub_67CEC`（主目標）都只有兩條路：目標格空著
+// 就走過去（`sub_66FA8`），有人就交給單位層（`sub_670DA`）。兩支執行者
+// 攔下來就知道走了哪一條、帶什麼參數。
+//
+// `sub_666FA` 決定「打誰」——它不是「兵最多的那個」，而是
+// 「還沒動的敵方総大将優先，其次照風向優先序取第一個敵人」。
+func advCases(o *oracle.Oracle, rng *rand.Rand, n int) []advCase {
+	const defRuler, atkRuler = 3, 7
+	var kind string
+	var gx, gy, genemy, gflags int
+	slotOf := func(v uint32) int {
+		switch {
+		case v >= defSlots && v < defSlots+10*sangokushi.SlotStride:
+			return int(v-defSlots) / sangokushi.SlotStride
+		case v >= atkSlots && v < atkSlots+10*sangokushi.SlotStride:
+			return 10 + int(v-atkSlots)/sangokushi.SlotStride
+		}
+		return -1
+	}
+	arg := func(f *x68k.Frame, i int) int {
+		v, err := xc.Long(f, i)
+		if err != nil {
+			return 0
+		}
+		return int(int32(v))
+	}
+	// `CaptureAssign` 在 `AdvanceTo` 上裝過「記一步就回去」的攔截點，
+	// 這裡要的是它真的跑，換成不略過原函式的那種。
+	o.Intercept(sangokushi.AdvanceTo, func(*x68k.Frame) (uint32, bool) { return 0, false })
+	o.Intercept(sangokushi.ActApproach, func(f *x68k.Frame) (uint32, bool) {
+		kind, gx, gy, gflags = "move", arg(f, 1), arg(f, 2), arg(f, 3)
+		return 0, true
+	})
+	o.Intercept(sangokushi.UnitAct, func(f *x68k.Frame) (uint32, bool) {
+		kind, genemy, gflags = "act", slotOf(uint32(arg(f, 1))), arg(f, 2)
+		return 0, true
+	})
+
+	out := make([]advCase, 0, n)
+	for i := 0; i < n; i++ {
+		var c advCase
+		tc := targetCase{Acting: "defender"}
+		acting := byte(defRuler)
+		if i%2 == 1 {
+			tc.Acting, acting = "attacker", byte(atkRuler)
+		}
+		terrain := make([]byte, cells)
+		fire := make([]byte, cells)
+		units := make([]byte, cells)
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(5))
+			fire[j] = '0'
+			units[j] = '.'
+		}
+		for j := 0; j < 4; j++ {
+			fire[rng.Intn(cells)] = byte('0' + rng.Intn(4))
+		}
+		nextDef, nextAtk := 1, 1
+		for j := 0; j < 8 && nextDef < 10; j++ {
+			p := rng.Intn(cells)
+			if units[p] == '.' {
+				units[p] = 'a' + byte(nextDef)
+				nextDef++
+			}
+		}
+		for j := 0; j < 8 && nextAtk < 10; j++ {
+			p := rng.Intn(cells)
+			if units[p] == '.' {
+				units[p] = 'A' + byte(nextAtk)
+				nextAtk++
+			}
+		}
+		selfMark := byte('a')
+		if tc.Acting == "attacker" {
+			selfMark = 'A'
+		}
+		for {
+			p := rng.Intn(cells)
+			if units[p] != '.' {
+				continue
+			}
+			units[p] = selfMark
+			tc.UX, tc.UY = p%sangokushi.TerrainCols, p/sangokushi.TerrainCols
+			break
+		}
+		// 一半的案例把目標放在自己旁邊——不然幾乎都走「走過去」那條。
+		tc.HQX, tc.HQY = rng.Intn(sangokushi.TerrainCols), rng.Intn(sangokushi.BattleRows)
+		bx, by := rng.Intn(sangokushi.TerrainCols), rng.Intn(sangokushi.BattleRows)
+		if i%2 == 0 {
+			nx, ny, ok, err := sangokushi.CallNeighbour(o, scratch+0x1880, tc.UX, tc.UY, 1+rng.Intn(6))
+			die(err)
+			if ok {
+				bx, by = nx, ny
+			}
+		}
+		for j := 0; j < 20; j++ {
+			if rng.Intn(6) == 0 {
+				tc.Chiefs = append(tc.Chiefs, j)
+			}
+			if rng.Intn(4) == 0 {
+				tc.Acted = append(tc.Acted, j)
+			}
+		}
+		tc.Terrain, tc.Fire, tc.Units = string(terrain), string(fire), string(units)
+		c = advCase{Terrain: tc.Terrain, Fire: tc.Fire, Units: tc.Units,
+			Wind: rng.Intn(6), Chiefs: tc.Chiefs, Acted: tc.Acted,
+			Acting: tc.Acting, UX: tc.UX, UY: tc.UY, Flags: rng.Intn(0x40),
+			BX: bx, BY: by}
+
+		self := writeTargetBoard(o, &tc, acting)
+		die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
+
+		e, err := o.Call(sangokushi.PickEnemy, self, 0)
+		die(err)
+		c.Enemy = -1
+		if e != 0 {
+			c.Enemy = slotOf(e)
+		}
+
+		kind, gx, gy, genemy, gflags = "none", 0, 0, -1, 0
+		if _, err := o.Call(sangokushi.AdvanceTo, self, u32(bx), u32(by), u32(c.Flags)); err != nil {
+			die(err)
+		}
+		c.C76Kind, c.C76X, c.C76Y, c.C76Enemy, c.C76Flags = kind, gx, gy, genemy, gflags
+
+		kind, gx, gy, genemy, gflags = "none", 0, 0, -1, 0
+		if _, err := o.Call(sangokushi.MainAct, self, u32(bx), u32(by)); err != nil {
+			die(err)
+		}
+		c.CECKind, c.CECEnemy, c.CECFlags = kind, genemy, gflags
 		out = append(out, c)
 	}
 	return out
