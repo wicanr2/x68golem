@@ -286,6 +286,18 @@ type evadeCase struct {
 	EndY    int    `json:"endY"`
 }
 
+// strategyCase 是戰略層的一次查詢：一張隨機的國家鄰接圖，
+// 問每一國的威脅分數，以及「從 from 看，每一國能不能當戰爭目標」。
+type strategyCase struct {
+	Owner    []int   `json:"owner"`    // 每一國的君主（0 ＝ 空白地）
+	War      []int   `json:"war"`      // 每一國的交戰對象
+	Adjacent [][]int `json:"adjacent"` // 每一國的鄰國串（**故意不對稱**）
+	GensIn   []int   `json:"gensIn"`   // sub_618A4(T, from.君主) 的回值，由呼叫端給
+	From     int     `json:"from"`     // 本國（1 起算）
+	Threat   []int   `json:"threat"`   // sub_59848 逐國
+	Attack   []bool  `json:"attack"`   // sub_569C0 逐國
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -306,6 +318,7 @@ type fixture struct {
 	Advance     []advCase     `json:"advance"`
 	Round       []roundCase   `json:"round"`
 	Evade       []evadeCase   `json:"evade"`
+	Strategy    []strategyCase `json:"strategy"`
 }
 
 func main() {
@@ -321,6 +334,7 @@ func main() {
 	advs := flag.Int("advance", 400, "推進執行者的案例數")
 	rounds := flag.Int("rounds", 200, "整輪的案例數")
 	evades := flag.Int("evades", 200, "走避場的案例數")
+	strats := flag.Int("strategy", 200, "戰略層的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -481,6 +495,9 @@ func main() {
 	// ── 走避場 sub_676D4 ──────────────────────────────────────────────
 	f.Evade = evadeCases(o, rng, *evades)
 
+	// ── 戰略層 sub_59848／sub_569C0 ───────────────────────────────────
+	f.Strategy = strategyCases(o, rng, *strats)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -491,8 +508,8 @@ func main() {
 	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
 		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
 		len(f.Assign), len(f.Targets))
-	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d\n",
-		len(f.Advance), len(f.Round), len(f.Evade))
+	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d、戰略層 %d\n",
+		len(f.Advance), len(f.Round), len(f.Evade), len(f.Strategy))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -1777,4 +1794,74 @@ func writeEvadeBoard(o *oracle.Oracle, tc *targetCase, acting byte, mob []int) u
 	}
 	die(sangokushi.ResetStepCost(o))
 	return self
+}
+
+// strategyCases 問原版戰略層的兩支純函式：威脅分數與可攻述詞。
+//
+// 鄰接串**故意產成不對稱的**（A 的串裡有 B，B 的串裡不一定有 A）。
+// `sub_621B0(T, N)` 掃的是 **T 的串裡有沒有 N**，方向寫反的話對稱圖上
+// 看不出來——真的存檔多半是對稱的，所以這種錯會一路活到某個不對稱的劇本。
+//
+// `sub_618A4`（我方在 T 的武將數）要整張武將表，這一批先攔掉由呼叫端給值；
+// 那一支自己的對拍另外做。
+func strategyCases(o *oracle.Oracle, rng *rand.Rand, n int) []strategyCase {
+	const nations = 14 // 只用前 14 個國號，夠測完所有分支
+	gens := make([]uint32, nations+1)
+	o.Intercept(sangokushi.GensInAt, func(f *x68k.Frame) (uint32, bool) {
+		v, err := xc.Long(f, 0)
+		if err != nil {
+			return 0, true
+		}
+		idx := int(v-uint32(sangokushi.NationTable))/sangokushi.NationStride + 1
+		if idx < 1 || idx > nations {
+			return 0, true
+		}
+		return gens[idx], true
+	})
+
+	out := make([]strategyCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := strategyCase{
+			Owner: make([]int, nations), War: make([]int, nations),
+			Adjacent: make([][]int, nations), GensIn: make([]int, nations),
+			Threat: make([]int, nations), Attack: make([]bool, nations),
+			From: 1 + rng.Intn(nations),
+		}
+		for k := 0; k < nations; k++ {
+			c.Owner[k] = rng.Intn(4)   // 0 ＝ 空白地，1..3 三個君主
+			c.War[k] = rng.Intn(4)     // 0 ＝ 未交戰
+			c.GensIn[k] = rng.Intn(13) // 跨過 10 這個門檻
+			for t := 1; t <= nations; t++ {
+				if t != k+1 && rng.Intn(4) == 0 {
+					c.Adjacent[k] = append(c.Adjacent[k], t)
+				}
+			}
+		}
+		// 本國一定要有君主，否則 `sub_569C0` 的分支全部落到同一條。
+		if c.Owner[c.From-1] == 0 {
+			c.Owner[c.From-1] = 1
+		}
+		for k := 0; k < nations; k++ {
+			adj := make([]byte, len(c.Adjacent[k]))
+			for j, t := range c.Adjacent[k] {
+				adj[j] = byte(t)
+			}
+			die(sangokushi.NationRec{No: byte(k + 1), Owner: byte(c.Owner[k]),
+				War: byte(c.War[k]), Adjacent: adj}.Write(o))
+			gens[k+1] = u32(c.GensIn[k])
+		}
+		from := sangokushi.NationRec{No: byte(c.From)}.Addr()
+		die(o.SetLong(sangokushi.CurNation, from))
+		for k := 0; k < nations; k++ {
+			addr := sangokushi.NationRec{No: byte(k + 1)}.Addr()
+			v, err := o.Call(sangokushi.ThreatScore, addr)
+			die(err)
+			c.Threat[k] = int(int32(v))
+			a, err := o.Call(sangokushi.CanAttack, addr)
+			die(err)
+			c.Attack[k] = a != 0
+		}
+		out = append(out, c)
+	}
+	return out
 }

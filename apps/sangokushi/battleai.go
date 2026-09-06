@@ -685,3 +685,56 @@ func ReadCastleList(o *oracle.Oracle) (cells, pairs []int, groups int, err error
 	}
 	return cells, pairs, int(int32(g)), nil
 }
+
+// ── 戰略層（`docs/mechanics/70-ai.md`）──────────────────────────────────
+
+const (
+	// NationTable 國記錄表：`(國號 − 1) * NationStride`。
+	NationTable  = 0x7A1AA
+	NationStride = 0x58
+	NatNo        = 0x00 // 國號（`sub_621B0` 比的就是這一個 byte）
+	NatOwner     = 0x22 // 君主編號（0 ＝ 空白地）
+	NatAdj       = 0x24 // 鄰國串（byte，0 結尾）
+	NatWar       = 0x4E // 交戰對象的君主編號（0 ＝ 未交戰）
+
+	CurNation = 0x7B59A // 目前處理中的國記錄指標
+
+	ThreatScore = 0x59848 // sub_59848(N)：威脅分數
+	CanAttack   = 0x569C0 // sub_569C0(T)：T 可不可以當戰爭目標（本國取自 CurNation）
+	NationAdjTo = 0x621B0 // sub_621B0(T, N)：**T 的鄰國串裡有沒有 N**
+	GensInAt    = 0x618A4 // sub_618A4(T, ruler)：ruler 在 T 的武將數
+)
+
+// NationRec 是寫進國記錄表的一筆（只寫戰略層讀得到的那幾個欄位）。
+type NationRec struct {
+	No       byte
+	Owner    byte
+	War      byte
+	Adjacent []byte
+}
+
+// Addr 這一筆在表裡的位址。
+func (n NationRec) Addr() uint32 {
+	return uint32(NationTable) + uint32(n.No-1)*NationStride
+}
+
+// Write 先整筆清 0 再寫欄位。
+func (n NationRec) Write(o *oracle.Oracle) error {
+	a := n.Addr()
+	for i := uint32(0); i < NationStride; i++ {
+		if err := o.SetByte(a+i, 0); err != nil {
+			return err
+		}
+	}
+	for off, v := range map[uint32]byte{NatNo: n.No, NatOwner: n.Owner, NatWar: n.War} {
+		if err := o.SetByte(a+off, v); err != nil {
+			return err
+		}
+	}
+	for i, t := range n.Adjacent {
+		if err := o.SetByte(a+NatAdj+uint32(i), t); err != nil {
+			return err
+		}
+	}
+	return o.SetByte(a+NatAdj+uint32(len(n.Adjacent)), 0)
+}
