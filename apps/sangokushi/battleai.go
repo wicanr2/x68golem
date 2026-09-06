@@ -277,6 +277,17 @@ const (
 	PolDecapit   = 0x68278 // 斬首
 	PolMainAtk   = 0x682CC // 主力（攻）
 
+	// 名額指派 `sub_680E8(cb_target, cb_act, n)`（AI-8）。
+	Assign      = 0x680E8 // 逐槽發名額的本體
+	ActingSlots = 0x77C46 // 行動方槽陣列的**指標**（不是陣列本身）
+	SlotStride  = 0x24    // 一個槽 36 bytes；`sub_680E8` 固定走 10 個
+	Emerg       = 0x674E2 // sub_674E2(U)：緊急處置（非 0 ＝ 這個單位已處理完）
+	CounterAtk  = 0x67B68 // sub_67B68(&bx, &by, U)：守方近身反擊；非 0 ＝ 已反擊
+	AdvanceTo   = 0x67C76 // sub_67C76(U, bx, by, 0x1F)：朝推進目標走
+	ForageChk   = 0x64F42 // 本陣奪糧檢查
+	PanelDraw   = 0x634AA // 面板重繪
+	BattleOver  = 0x66536 // 戰鬥是否結束
+
 	// 火計相關。
 	Burnability  = 0x6533A // sub_6533A(x, y)：一格的可燃度
 	SpreadChance = 0x6542A // sub_6542A(x, y)：一格本回合的起火機率
@@ -325,7 +336,7 @@ func SetRulerHuman(o *oracle.Oracle, ruler byte, human bool) error {
 // PolicyPick 是 `sub_68382` 這一次選了哪一個方針。
 type PolicyPick struct {
 	Kind string // "attrition"／"collapse"／"forage"／"decapit"／"main-atk"／"none"
-	N    int    // forage：`sub_682B0(n)` 的 n
+	N    int    // 交給 `sub_680E8` 的名額（attrition／collapse 不呼叫它，記 −1）
 }
 
 // World 是「讀世界」那幾支要回的值，依君主編號分。
@@ -371,21 +382,145 @@ func CapturePolicy(o *oracle.Oracle, w *World, out *PolicyPick) {
 	})
 	o.Intercept(RetreatTo, func(*x68k.Frame) (uint32, bool) { return w.Retreat, true })
 
-	branch := func(addr uint32, kind string, withN bool) {
-		o.Intercept(addr, func(f *x68k.Frame) (uint32, bool) {
-			p := PolicyPick{Kind: kind}
-			if withN {
-				if v, err := xc.Long(f, 0); err == nil {
-					p.N = int(int32(v))
-				}
-			}
-			*out = p
+	// 持久與總崩潰不經過 `sub_680E8`，各自有一圈逐槽的迴圈——攔在入口。
+	stop := func(addr uint32, kind string) {
+		o.Intercept(addr, func(*x68k.Frame) (uint32, bool) {
+			*out = PolicyPick{Kind: kind, N: -1}
 			return 0, true
 		})
 	}
-	branch(PolAttrition, "attrition", false)
-	branch(PolCollapse, "collapse", false)
-	branch(PolForage, "forage", true)
-	branch(PolDecapit, "decapit", false)
-	branch(PolMainAtk, "main-atk", false)
+	stop(PolAttrition, "attrition")
+	stop(PolCollapse, "collapse")
+
+	// 另外三個**讓它跑**，只在入口記下是哪一支，名額由 `sub_680E8` 那邊抓。
+	// 名額是 `sub_682CC`／`sub_68278` 自己算出來的（`sub_63196(行動方) ÷ 2`、
+	// `(sub_63196(行動方) + 1) ÷ 2`），攔在入口就看不到。
+	note := func(addr uint32, kind string) {
+		o.OnCall(addr, func(*x68k.Frame) { *out = PolicyPick{Kind: kind, N: -1} })
+	}
+	note(PolForage, "forage")
+	note(PolDecapit, "decapit")
+	note(PolMainAtk, "main-atk")
+	o.Intercept(Assign, func(f *x68k.Frame) (uint32, bool) {
+		if v, err := xc.Long(f, 2); err == nil {
+			out.N = int(int32(v))
+		}
+		return 0, true
+	})
+}
+
+// AssignStep 是 `sub_680E8` 對一個槽下的決定。
+type AssignStep struct {
+	Slot int    `json:"slot"` // 第幾個槽（0..9）
+	Kind string `json:"kind"` // "main" ＝ cb_act（走 cb_target 的目標）／"advance" ＝ sub_67C76
+	N    int    `json:"n"`    // 決定**之後**的剩餘名額
+}
+
+// AssignWorld 是名額指派要問外界的每一件事。
+//
+// `sub_680E8` 本體只做「排名 → 比名額 → 二選一」，其餘全是呼叫別人：
+// 緊急處置、守方反擊、兩個目標、面板、結束判定。全部攔掉之後它就是純函式。
+type AssignWorld struct {
+	BX, BY    int          // sub_67B68 寫回的推進目標
+	AX, AY    int          // cb_target 寫回的主目標
+	HasA      bool         // cb_target 回非 0（有主目標）
+	Emergency map[int]bool // 這些槽的 sub_674E2 回 1
+	Counter   map[int]bool // 這些槽的 sub_67B68 回 1（已反擊）
+}
+
+// CaptureAssign 把 `sub_680E8` 變成純函式：外界那幾支全部由 w 給答案，
+// 兩個 callback 指到 stubTarget／stubAct 這兩個假位址（攔截點是看 PC 的，
+// 位址上有沒有程式碼無所謂），落到哪一支就記一步。
+//
+// slotBase 是十個槽的起點；呼叫端要自己把 `ActingSlots` 指過去。
+func CaptureAssign(o *oracle.Oracle, slotBase, stubTarget, stubAct uint32,
+	w *AssignWorld, out *[]AssignStep) {
+	slotOf := func(f *x68k.Frame, n int) int {
+		v, err := xc.Long(f, n)
+		if err != nil {
+			return -1
+		}
+		return int(v-slotBase) / SlotStride
+	}
+	yes := func(m map[int]bool, k int) uint32 {
+		if m != nil && m[k] {
+			return 1
+		}
+		return 0
+	}
+	// 剩餘名額是 `sub_680E8` 的第三個參數（`arg_8`），它自己會用
+	// `sub_609FE` 就地改。`link a6` 之後參數在 `8(a6)` 起，而 A6 在
+	// callback 裡還是 `sub_680E8` 的框——攔截點是在執行 stub 的第一道
+	// 指令**之前**觸發的，什麼都還沒動。
+	quota := func(f *x68k.Frame) int {
+		v, err := o.Long(f.Machine().CPU.State.A[6] + 16)
+		if err != nil {
+			return 0
+		}
+		return int(int32(v))
+	}
+
+	// `CapturePolicy` 也在 `Assign` 上裝過攔截點（它要抓名額）。攔截點以位址
+	// 為鍵、後裝的蓋掉先裝的，這裡明白地裝一個「不要略過原函式」把它換掉——
+	// 不然 `sub_680E8` 的本體根本不會跑，這一段就變成量自己的攔截器。
+	o.Intercept(Assign, func(*x68k.Frame) (uint32, bool) { return 0, false })
+
+	o.Intercept(Emerg, func(f *x68k.Frame) (uint32, bool) {
+		return yes(w.Emergency, slotOf(f, 0)), true
+	})
+	o.Intercept(CounterAtk, func(f *x68k.Frame) (uint32, bool) {
+		// 不論有沒有反擊，(bx, by) 都會被寫（`sub_67B68` 步驟 1、2）。
+		bx, _ := xc.Long(f, 0)
+		by, _ := xc.Long(f, 1)
+		_ = o.SetLong(bx, uint32(int32(w.BX)))
+		_ = o.SetLong(by, uint32(int32(w.BY)))
+		return yes(w.Counter, slotOf(f, 2)), true
+	})
+	o.Intercept(stubTarget, func(f *x68k.Frame) (uint32, bool) {
+		ax, _ := xc.Long(f, 0)
+		ay, _ := xc.Long(f, 1)
+		_ = o.SetLong(ax, uint32(int32(w.AX)))
+		_ = o.SetLong(ay, uint32(int32(w.AY)))
+		if w.HasA {
+			return 1, true
+		}
+		return 0, true
+	})
+	o.Intercept(stubAct, func(f *x68k.Frame) (uint32, bool) {
+		*out = append(*out, AssignStep{Slot: slotOf(f, 0), Kind: "main", N: quota(f)})
+		return 0, true
+	})
+	o.Intercept(AdvanceTo, func(f *x68k.Frame) (uint32, bool) {
+		*out = append(*out, AssignStep{Slot: slotOf(f, 0), Kind: "advance", N: quota(f)})
+		return 0, true
+	})
+	for _, a := range []uint32{ForageChk, PanelDraw, BattleOver} {
+		o.Intercept(a, func(*x68k.Frame) (uint32, bool) { return 0, true })
+	}
+}
+
+// WriteAssignSlots 擺出十個槽：occupied[i] 為假就是空槽（`+0` 記 0）。
+func WriteAssignSlots(o *oracle.Oracle, base uint32, xs, ys []int, occupied []bool) error {
+	for i := 0; i < 10; i++ {
+		a := base + uint32(i)*SlotStride
+		for j := uint32(0); j < SlotStride; j++ {
+			if err := o.SetByte(a+j, 0); err != nil {
+				return err
+			}
+		}
+		if !occupied[i] {
+			continue
+		}
+		// `+0` 只要非 0 就算有單位；`sub_680E8` 本身不解參照它。
+		if err := o.SetLong(a+UnitGeneral, 1); err != nil {
+			return err
+		}
+		if err := o.SetLong(a+UnitX, uint32(int32(xs[i]))); err != nil {
+			return err
+		}
+		if err := o.SetLong(a+UnitY, uint32(int32(ys[i]))); err != nil {
+			return err
+		}
+	}
+	return o.SetLong(ActingSlots, base)
 }

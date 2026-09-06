@@ -34,7 +34,12 @@ const (
 	fieldBuf = scratch + 0x0000 // 672 bytes
 	unitBase = scratch + 0x0400 // 每個單位槽 0x40
 	genBase  = scratch + 0x0C00 // 每筆武將記錄 0x40
-	cells    = sangokushi.BattleRows * sangokushi.TerrainCols
+	slotBase = scratch + 0x1400 // 名額指派用的十個槽（步長 0x24）
+	// 兩個假的 callback 位址：`sub_680E8` 的 `jsr (a3)`／`jsr (a4)` 跳過來，
+	// 攔截點看的是 PC，位址上有沒有程式碼無所謂。
+	stubTarget = scratch + 0x1800
+	stubAct    = scratch + 0x1808
+	cells      = sangokushi.BattleRows * sangokushi.TerrainCols
 )
 
 // 為了讓 JSON 好讀，每一類案例各有自己的結構。
@@ -141,6 +146,20 @@ type burnCase struct {
 	Spread  int   `json:"spread"`   // sub_6542A(x, y)
 }
 
+// assignCase 是名額指派 `sub_680E8(cb_target, cb_act, n)` 的一次判定。
+type assignCase struct {
+	X       []int                  `json:"x"`      // 十個槽的座標（空槽的值無意義）
+	Y       []int                  `json:"y"`
+	Filled  []bool                 `json:"filled"` // 哪些槽有單位
+	N       int                    `json:"n"`      // 起始名額
+	AX      int                    `json:"ax"`     // cb_target 的目標
+	AY      int                    `json:"ay"`
+	HasA    bool                   `json:"hasA"`   // cb_target 有沒有目標
+	BX      int                    `json:"bx"`     // sub_67B68 的推進目標
+	BY      int                    `json:"by"`
+	Steps   []sangokushi.AssignStep `json:"steps"`
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -156,6 +175,7 @@ type fixture struct {
 	Neighbour   [][6]int      `json:"neighbour"` // x,y,dir,nx,ny,inBounds
 	Policy      []policyCase  `json:"policy"`
 	Burn        []burnCase    `json:"burn"`
+	Assign      []assignCase  `json:"assign"`
 }
 
 func main() {
@@ -166,6 +186,7 @@ func main() {
 	acts := flag.Int("acts", 400, "單位層決策的案例數")
 	policies := flag.Int("policies", 400, "方針層的案例數")
 	burns := flag.Int("burns", 400, "可燃度／起火機率的案例數")
+	assigns := flag.Int("assigns", 400, "名額指派的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -311,6 +332,9 @@ func main() {
 	// ── 可燃度 sub_6533A ＋ 起火機率 sub_6542A ────────────────────────
 	f.Burn = burnCases(o, rng, *burns)
 
+	// ── 名額指派 sub_680E8 ────────────────────────────────────────────
+	f.Assign = assignCases(o, rng, *assigns)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -318,8 +342,8 @@ func main() {
 		"距離場 %d 個盤面、單位層決策 %d\n",
 		*out, len(f.HexDistance), len(f.DirCode), len(f.Supply),
 		len(f.ChargeOdds), len(f.DistField), len(f.UnitAct))
-	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d\n",
-		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn))
+	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d\n",
+		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn), len(f.Assign))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -743,6 +767,54 @@ func burnCases(o *oracle.Oracle, rng *rand.Rand, n int) []burnCase {
 		sv, err := o.Call(sangokushi.SpreadChance, u32(c.X), u32(c.Y))
 		die(err)
 		c.Burn, c.Spread = int(int32(bv)), int(int32(sv))
+		out = append(out, c)
+	}
+	return out
+}
+
+// assignCases 問原版「這十個槽，誰走主目標、誰走推進目標」。
+//
+// `sub_680E8` 本體只有排名與名額兩件事，其餘全是呼叫別人；把那些全部攔掉
+// 之後它就是純函式（`sangokushi.CaptureAssign`）。這一層對不上的症狀不會
+// 出現在畫面上——單位還是會動，只是動去別的地方。
+func assignCases(o *oracle.Oracle, rng *rand.Rand, n int) []assignCase {
+	var w sangokushi.AssignWorld
+	var steps []sangokushi.AssignStep
+	sangokushi.CaptureAssign(o, slotBase, stubTarget, stubAct, &w, &steps)
+
+	out := make([]assignCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := assignCase{
+			X:      make([]int, 10),
+			Y:      make([]int, 10),
+			Filled: make([]bool, 10),
+			N:      rng.Intn(7),
+			AX:     rng.Intn(sangokushi.TerrainCols),
+			AY:     rng.Intn(sangokushi.BattleRows),
+			BX:     rng.Intn(sangokushi.TerrainCols),
+			BY:     rng.Intn(sangokushi.BattleRows),
+			HasA:   rng.Intn(8) != 0, // 少數案例讓 cb_target 說「沒有目標」
+		}
+		for j := 0; j < 10; j++ {
+			c.X[j] = rng.Intn(sangokushi.TerrainCols)
+			c.Y[j] = rng.Intn(sangokushi.BattleRows)
+			c.Filled[j] = rng.Intn(4) != 0
+		}
+		// 一半的案例把所有單位塞在同一條線上：排名的平手拆解
+		// （距離相同時比對主目標的距離）只有在平手夠多時才驗得到。
+		if i%2 == 0 {
+			row := rng.Intn(sangokushi.BattleRows)
+			for j := 0; j < 10; j++ {
+				c.Y[j] = row
+			}
+		}
+		die(sangokushi.WriteAssignSlots(o, slotBase, c.X, c.Y, c.Filled))
+		w = sangokushi.AssignWorld{BX: c.BX, BY: c.BY, AX: c.AX, AY: c.AY, HasA: c.HasA}
+		steps = nil
+		if _, err := o.Call(sangokushi.Assign, stubTarget, stubAct, u32(c.N)); err != nil {
+			die(err)
+		}
+		c.Steps = steps
 		out = append(out, c)
 	}
 	return out
