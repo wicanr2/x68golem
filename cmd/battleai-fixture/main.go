@@ -42,6 +42,7 @@ const (
 	stubTarget = scratch + 0x1800
 	stubAct    = scratch + 0x1808
 	adjBuf     = scratch + 0x1810 // 城格鄰接表 60 bytes
+	nationBuf  = scratch + 0x2400 // 戰場所在國的國記錄
 	defSlots   = scratch + 0x1900 // 守方十個槽（步長 0x24）
 	atkSlots   = scratch + 0x1B00 // 攻方十個槽
 	defGens    = scratch + 0x1D00 // 對應的武將記錄（步長 0x30）
@@ -228,6 +229,48 @@ type advCase struct {
 	CECFlags int    `json:"cecFlags"`
 }
 
+// strikeRec 是整輪裡的一次出手。
+type strikeRec struct {
+	U    int `json:"u"`
+	T    int `json:"t"`
+	Mode int `json:"mode"`
+}
+
+// roundCase 是**一整輪**：`sub_68382` 從方針選到每個單位動完。
+type roundCase struct {
+	Terrain string `json:"terrain"`
+	Fire    string `json:"fire"`
+	Units   string `json:"units"`
+	Troops  []int  `json:"troops"` // 20 個槽
+	Mob     []int  `json:"mob"`
+	Intel   []int  `json:"intel"`
+	Force   []int  `json:"force"`
+	Lords   []int  `json:"lords"`
+	Chiefs  []int  `json:"chiefs"`
+	Wind    int    `json:"wind"`
+	Day     int    `json:"day"`
+	HQX     int    `json:"hqx"`
+	HQY     int    `json:"hqy"`
+	Acting  string `json:"acting"`
+	Gold    int    `json:"gold"`
+	Rice    int    `json:"rice"`
+	AtkGold int    `json:"atkGold"`
+	AtkRice int    `json:"atkRice"`
+
+	OwnDeploy int `json:"ownDeploy"`
+	EnyDeploy int `json:"enyDeploy"`
+	OwnGens   int `json:"ownGens"`
+	EnyGens   int `json:"enyGens"`
+	Groups    int `json:"groups"`
+
+	Policy  string      `json:"policy"`
+	Quota   int         `json:"quota"`
+	Strikes []strikeRec `json:"strikes"`
+	FinalX  []int       `json:"finalX"`
+	FinalY  []int       `json:"finalY"`
+	FinalM  []int       `json:"finalM"`
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -246,6 +289,7 @@ type fixture struct {
 	Assign      []assignCase  `json:"assign"`
 	Targets     []targetCase  `json:"targets"`
 	Advance     []advCase     `json:"advance"`
+	Round       []roundCase   `json:"round"`
 }
 
 func main() {
@@ -259,6 +303,7 @@ func main() {
 	assigns := flag.Int("assigns", 400, "名額指派的案例數")
 	tgts := flag.Int("targets", 200, "目標選擇的案例數")
 	advs := flag.Int("advance", 400, "推進執行者的案例數")
+	rounds := flag.Int("rounds", 200, "整輪的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -413,6 +458,9 @@ func main() {
 	// ── 推進執行者 sub_666FA／sub_67C76／sub_67CEC ─────────────────────
 	f.Advance = advCases(o, rng, *advs)
 
+	// ── 整輪 sub_68382 ────────────────────────────────────────────────
+	f.Round = roundCases(o, rng, *rounds)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -423,7 +471,7 @@ func main() {
 	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
 		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
 		len(f.Assign), len(f.Targets))
-	fmt.Printf("        推進執行者 %d\n", len(f.Advance))
+	fmt.Printf("        推進執行者 %d、整輪 %d\n", len(f.Advance), len(f.Round))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -506,6 +554,7 @@ func runBoard(o *oracle.Oracle, c fieldCase) fieldCase {
 			X: u32(i % sangokushi.TerrainCols), Y: u32(i / sangokushi.TerrainCols),
 			Troops: 1000}.Write(o))
 		b.Occupy[i] = u
+		b.Terrain[i] |= 0x80 // bit7 ＝ 有單位
 		slot++
 	}
 	die(b.Write(o))
@@ -522,6 +571,7 @@ func runBoard(o *oracle.Oracle, c fieldCase) fieldCase {
 		die(sangokushi.BattleUnit{Addr: self, General: g,
 			X: u32(c.UX), Y: u32(c.UY), Troops: 1000}.Write(o))
 		b.Occupy[si] = self
+		b.Terrain[si] |= 0x80
 		c.Occupy[si] = 1
 		die(b.Write(o))
 	}
@@ -674,6 +724,8 @@ func runAct(o *oracle.Oracle, c *actCase) {
 	ti := c.T.Y*sangokushi.TerrainCols + c.T.X
 	b.Occupy[ui] = unitBase
 	b.Occupy[ti] = unitBase + 0x40
+	b.Terrain[ui] |= 0x80 // bit7 ＝ 有單位
+	b.Terrain[ti] |= 0x80
 	die(b.Write(o))
 	die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
 	die(o.SetLong(sangokushi.OwnSupply, u32(c.OwnSup)))
@@ -832,6 +884,7 @@ func burnCases(o *oracle.Oracle, rng *rand.Rand, n int) []burnCase {
 		}
 		if c.HasUnit {
 			b.Occupy[c.Y*sangokushi.TerrainCols+c.X] = unitBase
+			b.Terrain[c.Y*sangokushi.TerrainCols+c.X] |= 0x80 // bit7 ＝ 有單位
 		}
 		die(b.Write(o))
 		die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
@@ -1128,6 +1181,7 @@ func writeTargetBoard(o *oracle.Oracle, c *targetCase, acting byte) uint32 {
 		}
 		die(sangokushi.SetMobility(o, slot, mob))
 		b.Occupy[j] = slot
+		b.Terrain[j] |= 0x80 // bit7 ＝ 有單位（`sub_662E2`／`sub_6533A` 都看它）
 		if j == c.UY*sangokushi.TerrainCols+c.UX {
 			self = slot
 			if c.Navy {
@@ -1288,4 +1342,303 @@ func advCases(o *oracle.Oracle, rng *rand.Rand, n int) []advCase {
 		out = append(out, c)
 	}
 	return out
+}
+
+// roundCases 問原版「這一整輪，每個單位各做了什麼、最後站在哪」。
+//
+// 這是把方針層、名額指派、目標選擇、推進執行者、單位層**串起來**跑一次：
+// 從 `sub_68382` 進去，一路到每個單位動完。走位是真的走（`sub_66FA8` →
+// `sub_667B0` → `sub_65030` 全程執行），所以盤面會隨著前面的單位改變，
+// 後面的單位看到的是變過的盤面——這正是「串起來」才驗得到的東西。
+//
+// 攔掉的只有四類，每一類都有理由：
+//
+//   - 畫面與節奏（`sub_5BBA8` 游標、`0x5C042` 訊息列、`sub_634AA` 面板、
+//     `sub_61572` 忙等）：無頭環境沒有它們，`sub_61572` 不攔會空轉幾百萬圈。
+//   - 出手結算 `loc_65B5A`：**記下來就跳過**。remake 的 `BattleTurn` 也只回報
+//     mode 與對象、不套用損失，攔掉才是同一件事。
+//   - 讀世界的四支（`sub_63196`／`sub_631EC`／`sub_6342A`／`sub_622CC`）：
+//     由呼叫端給值，remake 那邊擺出產生同樣數字的狀態。
+//   - `sub_674E2`（緊急處置）、`sub_64F42`（奪糧）、`sub_66536`（結束判定）：
+//     remake 的 `BattleTurn` 沒有這三步，讓它們回 0 才比得到同一件事。
+//     **這是這一批的已知範圍，不是「原版沒有這三步」。**
+func roundCases(o *oracle.Oracle, rng *rand.Rand, n int) []roundCase {
+	const defRuler, atkRuler = 3, 7
+	var strikes []strikeRec
+	slotOf := func(v uint32) int {
+		switch {
+		case v >= defSlots && v < defSlots+10*sangokushi.SlotStride:
+			return int(v-defSlots) / sangokushi.SlotStride
+		case v >= atkSlots && v < atkSlots+10*sangokushi.SlotStride:
+			return 10 + int(v-atkSlots)/sangokushi.SlotStride
+		}
+		return -1
+	}
+	argL := func(f *x68k.Frame, i int) int {
+		v, err := xc.Long(f, i)
+		if err != nil {
+			return 0
+		}
+		return int(int32(v))
+	}
+	mute := func(a uint32) {
+		o.Intercept(a, func(*x68k.Frame) (uint32, bool) { return 0, true })
+	}
+	for _, a := range []uint32{sangokushi.CursorTo, sangokushi.BattleMsg,
+		sangokushi.PanelDraw, sangokushi.BusyWait, sangokushi.Emerg,
+		sangokushi.SeizeCheck, sangokushi.OverCheck, sangokushi.RetreatTo} {
+		mute(a)
+	}
+	// `CaptureAssign`／`CapturePolicy` 在這幾支上裝過會略過原函式的攔截點，
+	// 整輪要它們真的跑。
+	for _, a := range []uint32{sangokushi.SupplyScore, sangokushi.Assign, sangokushi.AdvanceTo,
+		sangokushi.PolForage, sangokushi.PolDecapit, sangokushi.PolMainAtk,
+		sangokushi.PolAttrition, sangokushi.PolCollapse, sangokushi.ActApproach,
+		sangokushi.UnitAct, sangokushi.CounterAtk} {
+		o.Intercept(a, func(*x68k.Frame) (uint32, bool) { return 0, false })
+	}
+	o.Intercept(sangokushi.ActStrike, func(f *x68k.Frame) (uint32, bool) {
+		strikes = append(strikes, strikeRec{U: slotOf(uint32(argL(f, 0))),
+			T: slotOf(uint32(argL(f, 1))), Mode: argL(f, 2)})
+		return 0, true
+	})
+	// 方針與名額只看不改——整輪要它們真的跑。
+	policy, quota := "none", -1
+	for a, nm := range map[uint32]string{
+		sangokushi.PolAttrition: "attrition", sangokushi.PolCollapse: "collapse",
+		sangokushi.PolForage: "forage", sangokushi.PolDecapit: "decapit",
+		sangokushi.PolMainAtk: "main-atk",
+	} {
+		nm := nm
+		o.OnCall(a, func(*x68k.Frame) { policy = nm })
+	}
+	o.OnCall(sangokushi.Assign, func(f *x68k.Frame) { quota = argL(f, 2) })
+	var world sangokushi.World
+	pick := func(m map[byte]uint32, k byte) uint32 {
+		if m == nil {
+			return 0
+		}
+		return m[k]
+	}
+	argByte := func(f *x68k.Frame, i int) byte { return byte(argL(f, i)) }
+	o.Intercept(sangokushi.Deployable, func(f *x68k.Frame) (uint32, bool) {
+		return pick(world.Deployable, argByte(f, 0)), true
+	})
+	o.Intercept(sangokushi.NationGens, func(f *x68k.Frame) (uint32, bool) {
+		return pick(world.NationGens, argByte(f, 0)), true
+	})
+	o.Intercept(sangokushi.TotalTroops, func(f *x68k.Frame) (uint32, bool) {
+		return pick(world.TotalTroops, argByte(f, 0)), true
+	})
+	sangokushi.ForceRand(o, func(uint32) uint32 { return 0 })
+
+	out := make([]roundCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := roundCase{
+			Troops: make([]int, 20), Mob: make([]int, 20),
+			Intel: make([]int, 20), Force: make([]int, 20),
+			Wind: rng.Intn(6), Day: 1 + rng.Intn(27),
+			Acting:  "defender",
+			Gold:    rng.Intn(20000) + 500,
+			Rice:    rng.Intn(20000) + 500,
+			AtkGold: rng.Intn(20000) + 500,
+			AtkRice: rng.Intn(20000) + 500,
+			OwnGens: 1 + rng.Intn(6), EnyGens: 1 + rng.Intn(6),
+		}
+		acting := byte(defRuler)
+		if i%2 == 1 {
+			c.Acting, acting = "attacker", byte(atkRuler)
+		}
+		c.OwnDeploy, c.EnyDeploy = rng.Intn(c.OwnGens+1), rng.Intn(c.EnyGens+1)
+
+		terrain := make([]byte, cells)
+		fire := make([]byte, cells)
+		units := make([]byte, cells)
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(5))
+			fire[j] = '0'
+			units[j] = '.'
+		}
+		for j := 0; j < 3; j++ {
+			fire[rng.Intn(cells)] = byte('0' + rng.Intn(4))
+		}
+		for j := 0; j < 1+rng.Intn(5); j++ {
+			terrain[rng.Intn(cells)] = '4'
+		}
+		for {
+			p := rng.Intn(cells)
+			if terrain[p] != '4' {
+				c.HQX, c.HQY = p%sangokushi.TerrainCols, p/sangokushi.TerrainCols
+				break
+			}
+		}
+		// 兩邊各自擠在一個中心附近、兩個中心相鄰——散在全場的話幾乎不會接戰，
+		// 而「串起來」要驗的正是接戰之後的決定。
+		cx, cy := 2+rng.Intn(10), 2+rng.Intn(8)
+		place := func(mark byte, k, ox, oy int) {
+			for j := 0; j < k; j++ {
+				p := (oy+rng.Intn(3)-1)*sangokushi.TerrainCols + ox + rng.Intn(3) - 1
+				if p < 0 || p >= cells || units[p] != '.' || terrain[p] == '5' {
+					continue
+				}
+				units[p] = mark + byte(j)
+			}
+		}
+		place('a', 1+rng.Intn(5), cx, cy)
+		place('A', 1+rng.Intn(5), cx+1, cy+1)
+		for j := 0; j < 20; j++ {
+			c.Troops[j] = 300 + rng.Intn(9000)
+			c.Mob[j] = 2 + rng.Intn(10)
+			c.Intel[j] = 1 + rng.Intn(100)
+			c.Force[j] = 1 + rng.Intn(100)
+			if rng.Intn(10) == 0 {
+				c.Chiefs = append(c.Chiefs, j)
+			}
+			if rng.Intn(14) == 0 {
+				c.Lords = append(c.Lords, j)
+			}
+		}
+		c.Terrain, c.Fire, c.Units = string(terrain), string(fire), string(units)
+
+		ownT, enyT := writeRoundBoard(o, &c, acting)
+		world = sangokushi.World{
+			Deployable:  map[byte]uint32{},
+			NationGens:  map[byte]uint32{},
+			TotalTroops: map[byte]uint32{},
+		}
+		opp := byte(atkRuler)
+		if acting == atkRuler {
+			opp = defRuler
+		}
+		world.Deployable[acting] = u32(c.OwnDeploy)
+		world.Deployable[opp] = u32(c.EnyDeploy)
+		world.NationGens[acting] = u32(c.OwnGens)
+		world.NationGens[opp] = u32(c.EnyGens)
+		world.TotalTroops[acting] = u32(ownT)
+		world.TotalTroops[opp] = u32(enyT)
+
+		cellsB, pairsB, groups, err := sangokushi.ReadCastleList(o)
+		die(err)
+		_, _ = cellsB, pairsB
+		c.Groups = groups
+
+		strikes, policy, quota = nil, "none", -1
+		if _, err := o.Call(sangokushi.PolicyTurn); err != nil {
+			die(fmt.Errorf("整輪案例 %d：%w", i, err))
+		}
+		c.Strikes, c.Policy, c.Quota = strikes, policy, quota
+		c.FinalX, c.FinalY, c.FinalM = make([]int, 20), make([]int, 20), make([]int, 20)
+		for k := 0; k < 20; k++ {
+			base := uint32(defSlots) + uint32(k)*sangokushi.SlotStride
+			if k >= 10 {
+				base = uint32(atkSlots) + uint32(k-10)*sangokushi.SlotStride
+			}
+			x, err := o.Long(base + 4)
+			die(err)
+			y, err := o.Long(base + 8)
+			die(err)
+			m, err := o.Byte(base + 0x10)
+			die(err)
+			c.FinalX[k], c.FinalY[k], c.FinalM[k] = int(int32(x)), int(int32(y)), int(m)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// writeRoundBoard 擺整輪要用的完整盤面，回傳雙方總兵。
+func writeRoundBoard(o *oracle.Oracle, c *roundCase, acting byte) (int, int) {
+	const defRuler, atkRuler = 3, 7
+	has := func(list []int, v int) bool {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	}
+	var b sangokushi.Board
+	b.Ruler = acting
+	for j := 0; j < cells; j++ {
+		b.Terrain[j] = (c.Terrain[j] - '0') << 3
+		b.Fire[j] = c.Fire[j] - '0'
+	}
+	b.Terrain[c.HQY*sangokushi.TerrainCols+c.HQX] |= 6
+	for k := 0; k < 10; k++ {
+		die(sangokushi.BattleUnit{Addr: defSlots + uint32(k)*sangokushi.SlotStride}.Write(o))
+		die(sangokushi.BattleUnit{Addr: atkSlots + uint32(k)*sangokushi.SlotStride}.Write(o))
+	}
+	ownT, enyT := 0, 0
+	for j := 0; j < cells; j++ {
+		ch := c.Units[j]
+		if ch == '.' {
+			continue
+		}
+		idx, lord := 0, byte(defRuler)
+		slot, gen := uint32(0), uint32(0)
+		if ch >= 'a' && ch <= 'j' {
+			idx = int(ch - 'a')
+			slot, gen = defSlots+uint32(idx)*sangokushi.SlotStride, defGens+uint32(idx)*0x30
+		} else {
+			idx = 10 + int(ch-'A')
+			k := idx - 10
+			slot, gen, lord = atkSlots+uint32(k)*sangokushi.SlotStride, atkGens+uint32(k)*0x30, atkRuler
+		}
+		die(sangokushi.General{Addr: gen, Ruler: lord,
+			Intelligence: byte(c.Intel[idx]), Strength: byte(c.Force[idx])}.Write(o))
+		if has(c.Lords, idx) {
+			die(o.SetByte(gen+0x1B, 0x02))
+		}
+		if has(c.Chiefs, idx) {
+			die(o.SetByte(gen+0x2A, 0x80))
+		}
+		die(sangokushi.BattleUnit{Addr: slot, General: gen,
+			X: u32(j % sangokushi.TerrainCols), Y: u32(j / sangokushi.TerrainCols),
+			Troops: u32(c.Troops[idx])}.Write(o))
+		die(sangokushi.SetMobility(o, slot, byte(c.Mob[idx])))
+		b.Occupy[j] = slot
+		// **地形位元組的 bit7 ＝ 這一格有單位**（`sub_662E2` `lsr.b #3` 之後
+		// 類型被撐到 ≥ 16 而被判成不可通行）。單位格陣列 `0x77996` 是另一份，
+		// 兩份都要擺，不然原版會覺得整張地圖都空著，走位時可以疊在一起。
+		b.Terrain[j] |= 0x80
+		if lord == acting {
+			ownT += c.Troops[idx]
+		} else {
+			enyT += c.Troops[idx]
+		}
+	}
+	die(b.Write(o))
+
+	for i := uint32(0); i < 0x100; i += 4 {
+		die(o.SetLong(nationBuf+i, 0))
+	}
+	die(o.SetLong(nationBuf+4, u32(c.Gold)))
+	die(o.SetLong(nationBuf+8, u32(c.Rice)))
+	die(o.SetLong(nationBuf+0x50, u32(c.AtkGold)))
+	die(o.SetLong(nationBuf+0x54, u32(c.AtkRice)))
+	die(o.SetLong(sangokushi.NationPtr, nationBuf))
+
+	opp, oppSlots := uint32(atkRuler), uint32(atkSlots)
+	if acting == atkRuler {
+		opp, oppSlots = defRuler, defSlots
+	}
+	die(o.SetLong(sangokushi.DefRuler, defRuler))
+	die(o.SetLong(sangokushi.AtkRuler, atkRuler))
+	die(o.SetLong(sangokushi.ActingRuler, uint32(acting)))
+	die(o.SetLong(sangokushi.OppRuler, opp))
+	die(o.SetLong(sangokushi.OppSlots, oppSlots))
+	actingSlots := uint32(defSlots)
+	if acting == atkRuler {
+		actingSlots = atkSlots
+	}
+	die(o.SetLong(sangokushi.ActingSlots, actingSlots))
+	die(o.SetLong(sangokushi.HQX, u32(c.HQX)))
+	die(o.SetLong(sangokushi.HQY, u32(c.HQY)))
+	die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
+	die(o.SetLong(sangokushi.BattleDay, u32(c.Day)))
+	die(o.SetLong(sangokushi.Difficulty, 1))
+	die(o.SetLong(sangokushi.PolicyFlag, 0))
+	die(sangokushi.ResetStepCost(o))
+	die(sangokushi.BuildCastleList(o, adjBuf, scratch+0x1880))
+	return ownT, enyT
 }

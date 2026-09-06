@@ -298,6 +298,15 @@ const (
 	CellUnit   = 0x64BF8 // sub_64BF8(x, y, dir)：相鄰格的單位槽指標
 	PickEnemy  = 0x666FA // sub_666FA(V, dir)：V 旁邊要打哪一個敵人
 
+	// 整輪對拍要靜音／要讓步的幾支。
+	CursorTo    = 0x5BBA8 // sub_5BBA8(x, y)：游標視窗（＝ ActWindow）
+	BattleMsg   = 0x5C042 // 戰場訊息列
+	BusyWait    = 0x61572 // sub_61572(n)：忙等（動畫節奏）
+	SeizeCheck  = 0x64F42 // 本陣奪糧檢查
+	OverCheck   = 0x66536 // 戰鬥是否結束
+	ActEvade    = 0x676D4 // sub_676D4(U)：走避場
+	ActRetreat  = 0x66FE6 // sub_66FE6(U, 目的地)：退卻
+
 	// 城格清單（`sub_64718` `0x64af6-0x64bf0` 建，`sub_645FE` 做配對）。
 	Pairing     = 0x645FE // sub_645FE(adj, depth)：最少組數的分支界限
 	CastleCells = 0x77102 // 20 bytes：城格座標對，`0xFF` 結束
@@ -557,7 +566,9 @@ func BuildCastleList(o *oracle.Oracle, adj, scratch uint32) error {
 			if err != nil {
 				return err
 			}
-			if v == 0x20 && len(xs) < 10 {
+			// bit7 是「這一格有單位」，跟地形無關——`sub_64718` 是在佈陣之前
+			// 跑的，看到的地形沒有那個位元，所以這裡要遮掉。
+			if v&0x7F == 0x20 && len(xs) < 10 {
 				xs, ys = append(xs, x), append(ys, y)
 			}
 		}
