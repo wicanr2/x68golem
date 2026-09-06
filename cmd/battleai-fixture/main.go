@@ -298,6 +298,21 @@ type strategyCase struct {
 	Attack   []bool  `json:"attack"`   // sub_569C0 逐國
 }
 
+// pathCase 是「整張武將表 ＋ 整張國表」下的三支：該國現役武將數、
+// 某君主在某國的武將數、以及往目標的下一站。
+type pathCase struct {
+	Owner    []int   `json:"owner"`    // 58 國
+	War      []int   `json:"war"`
+	Adjacent [][]int `json:"adjacent"`
+	GenNat   []int   `json:"genNat"` // 255 筆武將的所在國
+	GenLord  []int   `json:"genLord"`
+
+	Active  []int  `json:"active"`  // sub_60E66 逐國
+	Mine    []int  `json:"mine"`    // sub_618A4(N, ruler) 逐國，ruler 見下
+	Ruler   int    `json:"ruler"`
+	Hops    [][3]int `json:"hops"` // {from, to, 下一站國號（0 ＝ 到不了）}
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -319,6 +334,7 @@ type fixture struct {
 	Round       []roundCase   `json:"round"`
 	Evade       []evadeCase   `json:"evade"`
 	Strategy    []strategyCase `json:"strategy"`
+	Path        []pathCase     `json:"path"`
 }
 
 func main() {
@@ -335,6 +351,7 @@ func main() {
 	rounds := flag.Int("rounds", 200, "整輪的案例數")
 	evades := flag.Int("evades", 200, "走避場的案例數")
 	strats := flag.Int("strategy", 200, "戰略層的案例數")
+	paths := flag.Int("paths", 60, "武將計數與尋路的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -498,6 +515,9 @@ func main() {
 	// ── 戰略層 sub_59848／sub_569C0 ───────────────────────────────────
 	f.Strategy = strategyCases(o, rng, *strats)
 
+	// ── 武將計數與尋路 sub_60E66／sub_618A4／sub_5A804 ─────────────────
+	f.Path = pathCases(o, rng, *paths)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -508,8 +528,8 @@ func main() {
 	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
 		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
 		len(f.Assign), len(f.Targets))
-	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d、戰略層 %d\n",
-		len(f.Advance), len(f.Round), len(f.Evade), len(f.Strategy))
+	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d、戰略層 %d、尋路 %d\n",
+		len(f.Advance), len(f.Round), len(f.Evade), len(f.Strategy), len(f.Path))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -1860,6 +1880,103 @@ func strategyCases(o *oracle.Oracle, rng *rand.Rand, n int) []strategyCase {
 			a, err := o.Call(sangokushi.CanAttack, addr)
 			die(err)
 			c.Attack[k] = a != 0
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// pathCases 問原版「這一國有幾個現役武將」「某君主在這一國有幾個人」
+// 「從 A 到 B 的下一站是哪一國」。
+//
+// 全部由**記憶體擺出來**：整張武將主表（255 筆）與整張國記錄表（58 筆）
+// 直接寫進去，不經過任何亂數，所以同一組輸入永遠同一個答案。
+func pathCases(o *oracle.Oracle, rng *rand.Rand, n int) []pathCase {
+	const nations = 58
+	// `strategyCases` 在 `sub_618A4` 上裝過會略過原函式的攔截點（那一批把
+	// 武將數當輸入給），這一批要它真的跑。
+	o.Intercept(sangokushi.GensOfLord, func(*x68k.Frame) (uint32, bool) { return 0, false })
+	out := make([]pathCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := pathCase{
+			Owner: make([]int, nations), War: make([]int, nations),
+			Adjacent: make([][]int, nations),
+			GenNat:   make([]int, sangokushi.GeneralCount),
+			GenLord:  make([]int, sangokushi.GeneralCount),
+			Active:   make([]int, nations), Mine: make([]int, nations),
+			Ruler: 1 + rng.Intn(3),
+		}
+		for k := 0; k < nations; k++ {
+			c.Owner[k] = rng.Intn(4)
+			c.War[k] = rng.Intn(6)
+			if c.War[k] > 3 {
+				c.War[k] = 0 // 一半以上未交戰，不然尋路整張都是牆
+			}
+			// 鄰接排成一條鏈 ＋ 少量捷徑，這樣才有「路」可走。
+			if k > 0 {
+				c.Adjacent[k] = append(c.Adjacent[k], k)
+			}
+			if k < nations-1 {
+				c.Adjacent[k] = append(c.Adjacent[k], k+2)
+			}
+			for j := 0; j < 2; j++ {
+				t := 1 + rng.Intn(nations)
+				if t != k+1 {
+					c.Adjacent[k] = append(c.Adjacent[k], t)
+				}
+			}
+		}
+		var recs []sangokushi.GenRec
+		for k := 0; k < sangokushi.GeneralCount; k++ {
+			// `sub_60E66 >= 28` 那道牆要真的踩得到：把大量武將**集中在少數幾國、
+			// 而且君主跟那一國的君主相同**，不然每一國都只有個位數，
+			// 那一條分支永遠不會成立（正對照證實過：不設那道牆，答案一模一樣）。
+			if rng.Intn(2) == 0 {
+				nat := 1 + rng.Intn(4)
+				c.GenNat[k] = nat
+				c.GenLord[k] = c.Owner[nat-1]
+				if c.GenLord[k] == 0 {
+					c.GenLord[k] = 1 + rng.Intn(3)
+				}
+			} else if rng.Intn(3) == 0 {
+				c.GenNat[k] = 1 + rng.Intn(nations)
+				c.GenLord[k] = 1 + rng.Intn(3)
+			}
+			if c.GenNat[k] != 0 {
+				recs = append(recs, sangokushi.GenRec{Index: k,
+					Nation: byte(c.GenNat[k]), Lord: byte(c.GenLord[k])})
+			}
+		}
+		die(sangokushi.WriteGeneralTable(o, recs))
+		for k := 0; k < nations; k++ {
+			adj := make([]byte, len(c.Adjacent[k]))
+			for j, t := range c.Adjacent[k] {
+				adj[j] = byte(t)
+			}
+			die(sangokushi.NationRec{No: byte(k + 1), Owner: byte(c.Owner[k]),
+				War: byte(c.War[k]), Adjacent: adj}.Write(o))
+		}
+		addr := func(no int) uint32 { return sangokushi.NationRec{No: byte(no)}.Addr() }
+		for k := 0; k < nations; k++ {
+			v, err := o.Call(sangokushi.ActiveGens, addr(k+1))
+			die(err)
+			c.Active[k] = int(int32(v))
+			v, err = o.Call(sangokushi.GensOfLord, addr(k+1), u32(c.Ruler))
+			die(err)
+			c.Mine[k] = int(int32(v))
+		}
+		for j := 0; j < 12; j++ {
+			from, to := 1+rng.Intn(nations), 1+rng.Intn(nations)
+			if from == to {
+				continue
+			}
+			v, err := o.Call(sangokushi.NextHop, addr(from), addr(to))
+			die(err)
+			no := 0
+			if v != 0 {
+				no = int(v-uint32(sangokushi.NationTable))/sangokushi.NationStride + 1
+			}
+			c.Hops = append(c.Hops, [3]int{from, to, no})
 		}
 		out = append(out, c)
 	}

@@ -738,3 +738,46 @@ func (n NationRec) Write(o *oracle.Oracle) error {
 	}
 	return o.SetByte(a+NatAdj+uint32(len(n.Adjacent)), 0)
 }
+
+const (
+	// GeneralTable 武將主表：`0x7BE82`，步長 `0x2C`，**255 筆**（`sub_60E2A`
+	// 從第 0 筆掃到第 254 筆）。
+	GeneralTable  = 0x7BE82
+	GeneralStride = 0x2C
+	GeneralCount  = 255
+	GenNation     = 0x24 // 所在國號（0 ＝ 不在任何國）
+
+	CountIf    = 0x60E2A // sub_60E2A(N, pred)：整張武將表裡滿足 pred 的筆數
+	ActiveGens = 0x60E66 // sub_60E66(N)：該國君主的、在該國的武將數
+	GensOfLord = 0x618A4 // sub_618A4(N, ruler)：ruler 的、在 N 的武將數
+	NextHop    = 0x5A804 // sub_5A804(N, T)：往 T 的下一站（0 ＝ 到不了）
+)
+
+// GenRec 是武將主表的一筆（只寫戰略層讀得到的欄位）。
+type GenRec struct {
+	Index  int
+	Nation byte
+	Lord   byte
+}
+
+// WriteGeneralTable 整張表先清 0 再寫進去。
+func WriteGeneralTable(o *oracle.Oracle, recs []GenRec) error {
+	for i := 0; i < GeneralCount; i++ {
+		a := uint32(GeneralTable) + uint32(i)*GeneralStride
+		for j := uint32(0); j < GeneralStride; j++ {
+			if err := o.SetByte(a+j, 0); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range recs {
+		a := uint32(GeneralTable) + uint32(r.Index)*GeneralStride
+		if err := o.SetByte(a+GenNation, r.Nation); err != nil {
+			return err
+		}
+		if err := o.SetByte(a+GenRuler, r.Lord); err != nil {
+			return err
+		}
+	}
+	return nil
+}
