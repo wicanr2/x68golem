@@ -271,6 +271,21 @@ type roundCase struct {
 	FinalM  []int       `json:"finalM"`
 }
 
+// evadeCase 是走避場 `sub_676D4` 的一次查詢：`sub_66E9C` 拿到的那 168 個值，
+// 以及沿場下降之後單位停在哪。
+type evadeCase struct {
+	Terrain string `json:"terrain"`
+	Fire    string `json:"fire"`
+	Units   string `json:"units"`
+	Mob     []int  `json:"mob"`
+	Acting  string `json:"acting"`
+	UX      int    `json:"ux"`
+	UY      int    `json:"uy"`
+	Field   []int  `json:"field"` // 168 個
+	EndX    int    `json:"endX"`
+	EndY    int    `json:"endY"`
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -290,6 +305,7 @@ type fixture struct {
 	Targets     []targetCase  `json:"targets"`
 	Advance     []advCase     `json:"advance"`
 	Round       []roundCase   `json:"round"`
+	Evade       []evadeCase   `json:"evade"`
 }
 
 func main() {
@@ -304,6 +320,7 @@ func main() {
 	tgts := flag.Int("targets", 200, "目標選擇的案例數")
 	advs := flag.Int("advance", 400, "推進執行者的案例數")
 	rounds := flag.Int("rounds", 200, "整輪的案例數")
+	evades := flag.Int("evades", 200, "走避場的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -461,6 +478,9 @@ func main() {
 	// ── 整輪 sub_68382 ────────────────────────────────────────────────
 	f.Round = roundCases(o, rng, *rounds)
 
+	// ── 走避場 sub_676D4 ──────────────────────────────────────────────
+	f.Evade = evadeCases(o, rng, *evades)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -471,7 +491,8 @@ func main() {
 	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d、名額指派 %d、目標 %d\n",
 		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn),
 		len(f.Assign), len(f.Targets))
-	fmt.Printf("        推進執行者 %d、整輪 %d\n", len(f.Advance), len(f.Round))
+	fmt.Printf("        推進執行者 %d、整輪 %d、走避場 %d\n",
+		len(f.Advance), len(f.Round), len(f.Evade))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -1641,4 +1662,119 @@ func writeRoundBoard(o *oracle.Oracle, c *roundCase, acting byte) (int, int) {
 	die(sangokushi.ResetStepCost(o))
 	die(sangokushi.BuildCastleList(o, adjBuf, scratch+0x1880))
 	return ownT, enyT
+}
+
+// evadeCases 問原版「持久方針要往哪裡躲」。
+//
+// `sub_676D4` 先建一張 168 格的威脅場（地形位元組 > 0x27 或有火 → 30000，
+// 其餘 0；**bit7「這一格有單位」也會讓位元組 > 0x27**），再對 14 個威脅源
+// ——對方十個槽加上地圖四角——各建一張影響圖疊上去，最後 `sub_66E9C` 沿場下降。
+//
+// 比兩件事：`sub_66E9C` 拿到的那 168 個值（攔住它就讀得到），以及讓它跑完
+// 之後單位停在哪。
+func evadeCases(o *oracle.Oracle, rng *rand.Rand, n int) []evadeCase {
+	const defRuler, atkRuler = 3, 7
+	fieldAddr := uint32(0)
+	o.Intercept(sangokushi.MoveField, func(f *x68k.Frame) (uint32, bool) {
+		v, err := xc.Long(f, 1)
+		if err == nil {
+			fieldAddr = v
+		}
+		return 0, true
+	})
+	out := make([]evadeCase, 0, n)
+	for i := 0; i < n; i++ {
+		tc := targetCase{Acting: "defender"}
+		acting := byte(defRuler)
+		if i%2 == 1 {
+			tc.Acting, acting = "attacker", byte(atkRuler)
+		}
+		terrain := make([]byte, cells)
+		fire := make([]byte, cells)
+		units := make([]byte, cells)
+		mob := make([]int, 20)
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(6)) // 0..5，5 是山
+			fire[j] = '0'
+			units[j] = '.'
+		}
+		for j := 0; j < 5; j++ {
+			fire[rng.Intn(cells)] = byte('0' + rng.Intn(4))
+		}
+		for j := 0; j < 20; j++ {
+			mob[j] = 2 + rng.Intn(10)
+		}
+		place := func(mark byte, k int) {
+			for j := 1; j <= k; j++ {
+				p := rng.Intn(cells)
+				if units[p] != '.' || terrain[p] == '5' {
+					continue
+				}
+				units[p] = mark + byte(j)
+			}
+		}
+		place('a', rng.Intn(9))
+		place('A', rng.Intn(9))
+		selfMark := byte('a')
+		if tc.Acting == "attacker" {
+			selfMark = 'A'
+		}
+		for {
+			p := rng.Intn(cells)
+			if terrain[p] == '5' || units[p] != '.' {
+				continue
+			}
+			units[p] = selfMark
+			tc.UX, tc.UY = p%sangokushi.TerrainCols, p/sangokushi.TerrainCols
+			break
+		}
+		tc.Terrain, tc.Fire, tc.Units = string(terrain), string(fire), string(units)
+		tc.HQX, tc.HQY = 0, 0
+		c := evadeCase{Terrain: tc.Terrain, Fire: tc.Fire, Units: tc.Units,
+			Mob: mob, Acting: tc.Acting, UX: tc.UX, UY: tc.UY}
+
+		// 第一次：攔住 `sub_66E9C`，只取那張場。
+		self := writeEvadeBoard(o, &tc, acting, mob)
+		fieldAddr = 0
+		o.Intercept(sangokushi.MoveField, func(f *x68k.Frame) (uint32, bool) {
+			if v, err := xc.Long(f, 1); err == nil {
+				fieldAddr = v
+			}
+			return 0, true
+		})
+		if _, err := o.Call(sangokushi.ActEvade, self); err != nil {
+			die(err)
+		}
+		c.Field = make([]int, cells)
+		for j := 0; j < cells; j++ {
+			v, err := o.Long(fieldAddr + uint32(j)*4)
+			die(err)
+			c.Field[j] = int(int32(v))
+		}
+		// 第二次：讓它真的走。盤面重擺，不然第一次的殘留會影響。
+		o.Intercept(sangokushi.MoveField, func(*x68k.Frame) (uint32, bool) { return 0, false })
+		self = writeEvadeBoard(o, &tc, acting, mob)
+		if _, err := o.Call(sangokushi.ActEvade, self); err != nil {
+			die(err)
+		}
+		x, err := o.Long(self + 4)
+		die(err)
+		y, err := o.Long(self + 8)
+		die(err)
+		c.EndX, c.EndY = int(int32(x)), int(int32(y))
+		out = append(out, c)
+	}
+	return out
+}
+
+// writeEvadeBoard 與 writeTargetBoard 同一套盤面，另外指定每個槽的機動力。
+func writeEvadeBoard(o *oracle.Oracle, tc *targetCase, acting byte, mob []int) uint32 {
+	tc.Acted = nil
+	self := writeTargetBoard(o, tc, acting)
+	for k := 0; k < 10; k++ {
+		die(sangokushi.SetMobility(o, defSlots+uint32(k)*sangokushi.SlotStride, byte(mob[k])))
+		die(sangokushi.SetMobility(o, atkSlots+uint32(k)*sangokushi.SlotStride, byte(mob[10+k])))
+	}
+	die(sangokushi.ResetStepCost(o))
+	return self
 }

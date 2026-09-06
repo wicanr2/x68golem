@@ -305,6 +305,7 @@ const (
 	SeizeCheck  = 0x64F42 // 本陣奪糧檢查
 	OverCheck   = 0x66536 // 戰鬥是否結束
 	ActEvade    = 0x676D4 // sub_676D4(U)：走避場
+	MoveField   = 0x66E9C // sub_66E9C(U, 場, flags)：沿場下降
 	ActRetreat  = 0x66FE6 // sub_66FE6(U, 目的地)：退卻
 
 	// 城格清單（`sub_64718` `0x64af6-0x64bf0` 建，`sub_645FE` 做配對）。
