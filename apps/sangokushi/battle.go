@@ -64,6 +64,7 @@ const (
 	GenIntelligence = 0x16 // 知力：≥ 0x60 才會走「這次不損兵」那條路
 	GenStrength     = 0x17 // 武力
 	GenRuler        = 0x25 // 所屬君主編號
+	GenExp          = 0x29 // 経験（能力值 eff = max(経験, 知力)）
 	GenArms         = 0x27 // 兵士武装
 	GenAbility      = 0x28 // 兵士能力
 	GenSize         = 0x2C
@@ -77,6 +78,7 @@ type General struct {
 	Arms         byte
 	Ability      byte
 	Ruler        byte
+	Exp          byte
 }
 
 // Write 把記錄寫進記憶體（先整筆清 0，避免帶到別人的殘值）。
@@ -92,6 +94,7 @@ func (g General) Write(o *oracle.Oracle) error {
 		GenArms:         g.Arms,
 		GenAbility:      g.Ability,
 		GenRuler:        g.Ruler,
+		GenExp:          g.Exp,
 	} {
 		if err := o.SetByte(g.Addr+off, v); err != nil {
 			return err

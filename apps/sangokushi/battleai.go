@@ -5,6 +5,7 @@ import (
 
 	"github.com/wicanr2/x68golem/internal/x68k"
 	"github.com/wicanr2/x68golem/oracle"
+	"github.com/wicanr2/x68golem/runtime/xc"
 )
 
 // 戰場 AI 的位址與版面。出處一律是 `sangokushi_x68k_cht` 的
@@ -48,6 +49,10 @@ const (
 
 	// Passable 是 `sub_662E2(U, dir, mob)`：往 dir 走得通嗎。
 	Passable = 0x662E2
+
+	// Neighbour 是 `sub_63848(&x, &y, dir)`：把 (x,y) 換成 dir 方向的相鄰格，
+	// 回傳非 0 表示在界內。**參數是指標**，答案寫回原處。
+	Neighbour = 0x63848
 )
 
 // 戰場的全域版面（`docs/formats/05-battle-state.md`）。
@@ -166,4 +171,92 @@ func SetFire(o *oracle.Oracle, x, y uint32, n byte) error {
 		return fmt.Errorf("sangokushi: 戰場座標 (%d,%d) 超出 %d×%d", x, y, TerrainCols, BattleRows)
 	}
 	return o.SetByte(FireGrid+y*TerrainCols+x, n)
+}
+
+// ── 單位層決策 `sub_670DA`（AI-4）────────────────────────────────────────
+//
+// `sub_670DA(U, T, flags)` **不回傳決定**，它直接把決定執行掉。所以對拍的做法是
+// 把五個「執行者」攔下來：攔到哪一支、參數是什麼，就是它決定了什麼。
+// 五支都是「呼叫完就 return」，所以攔掉之後 `sub_670DA` 等於一支純決策函式。
+const (
+	// UnitAct 是 `sub_670DA(U, T, flags)`。
+	UnitAct = 0x670DA
+
+	// 五個執行者（`docs/mechanics/40` AI-4）。
+	ActStandby  = 0x66DC6 // sub_66DC6(U)：待機
+	ActRally    = 0x64E7A // sub_64E7A(U)：集結（散開的分隊收回來）
+	ActFlank    = 0x64EC2 // sub_64EC2(U, dir)：散開去側翼
+	ActApproach = 0x66FA8 // sub_66FA8(U, tx, ty, flags)：走過去
+	ActStrike   = 0x65B5A // loc_65B5A(A, D, mode, x, y)：出手
+
+	// ActWindow 是出手前印字的視窗（`sub_5BBA8(0x43, 0x14)`）。與決策無關，攔掉。
+	ActWindow = 0x5BBA8
+
+	// 決策讀到的全域。
+	Wind        = 0x7760E // 風向 0..5（`docs/formats/05`）
+	OwnSupply   = 0x770EA // 行動方的補給分數
+	EnemySupply = 0x770EE // 對方的補給分數
+	PolicyFlag  = 0x770FE // 火計捷徑的閘（AI-4 `0x67286`）
+)
+
+// Act 是 `sub_670DA` 這一次決定做了什麼。
+type Act struct {
+	Kind string // "standby"／"rally"／"flank"／"approach"／"strike"／"none"
+	Mode int    // strike：攻擊種類 1..5
+	X, Y int    // approach：目的地；strike：目標座標；flank：方向碼放在 X
+}
+
+// CaptureAct 把五個執行者攔下來，決定寫進 out。
+//
+// **攔掉是選擇，而且這裡是必要的**：五支都會動畫面、動狀態，
+// 而要對的是「它決定做什麼」，不是「它怎麼做」。
+// 用了它就要記得：被攔掉的那幾支不在結論的涵蓋範圍內。
+func CaptureAct(o *oracle.Oracle, out *Act) {
+	arg := func(f *x68k.Frame, n int) int {
+		v, err := xc.Long(f, n)
+		if err != nil {
+			return 0
+		}
+		return int(int32(v))
+	}
+	set := func(addr uint32, fn func(f *x68k.Frame)) {
+		o.Intercept(addr, func(f *x68k.Frame) (uint32, bool) {
+			fn(f)
+			return 0, true
+		})
+	}
+	set(ActStandby, func(*x68k.Frame) { *out = Act{Kind: "standby"} })
+	set(ActRally, func(*x68k.Frame) { *out = Act{Kind: "rally"} })
+	set(ActFlank, func(f *x68k.Frame) { *out = Act{Kind: "flank", X: arg(f, 1)} })
+	set(ActApproach, func(f *x68k.Frame) {
+		*out = Act{Kind: "approach", X: arg(f, 1), Y: arg(f, 2)}
+	})
+	set(ActStrike, func(f *x68k.Frame) {
+		*out = Act{Kind: "strike", Mode: arg(f, 2), X: arg(f, 3), Y: arg(f, 4)}
+	})
+	set(ActWindow, func(*x68k.Frame) {})
+}
+
+// CallNeighbour 呼叫 `sub_63848(&x, &y, dir)`，回傳相鄰格與在不在界內。
+// scratch 是兩個 long 的暫存位址（呼叫端自己找一塊空的）。
+func CallNeighbour(o *oracle.Oracle, scratch uint32, x, y, dir int) (int, int, bool, error) {
+	if err := o.SetLong(scratch, uint32(int32(x))); err != nil {
+		return 0, 0, false, err
+	}
+	if err := o.SetLong(scratch+4, uint32(int32(y))); err != nil {
+		return 0, 0, false, err
+	}
+	r, err := o.Call(Neighbour, scratch, scratch+4, uint32(int32(dir)))
+	if err != nil {
+		return 0, 0, false, err
+	}
+	nx, err := o.Long(scratch)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	ny, err := o.Long(scratch + 4)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return int(int32(nx)), int(int32(ny)), r != 0, nil
 }

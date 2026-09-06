@@ -69,6 +69,38 @@ type fieldCase struct {
 	Field     []int `json:"field"`
 }
 
+// unitSpec 是對拍時擺出來的一個單位。
+type unitSpec struct {
+	X, Y     int
+	Troops   int
+	Mobility int
+	Force    int
+	Intel    int
+	Split    bool // 已散開（+0x12 非 0）
+}
+
+// actCase 是 `sub_670DA(U, T, flags)` 的一次決策。
+type actCase struct {
+	Terrain []int `json:"terrain"`
+	Fire    []int `json:"fire"`
+	Wind    int   `json:"wind"`
+	OwnSup  int   `json:"ownSupply"`
+	EnySup  int   `json:"enemySupply"`
+	Flags   int   `json:"flags"`
+	U       unitSpec
+	T       unitSpec
+	Kind    string `json:"kind"`
+	Mode    int    `json:"mode"`
+	DX      int    `json:"dx"`
+	DY      int    `json:"dy"`
+}
+
+// rateCase 是計略／火計成功率的一次查詢。
+type rateCase struct {
+	AIntel, AExp, DIntel, DExp int
+	Trick, Fire                int
+}
+
 type fixture struct {
 	Note        string        `json:"note"`
 	ExeSHA256   string        `json:"exeSha256"`
@@ -79,6 +111,9 @@ type fixture struct {
 	Supply      []supplyCase  `json:"supply"`
 	ChargeOdds  []chargeCase  `json:"chargeOdds"`
 	DistField   []fieldCase   `json:"distField"`
+	UnitAct     []actCase     `json:"unitAct"`
+	Rates       []rateCase    `json:"rates"`
+	Neighbour   [][6]int      `json:"neighbour"` // x,y,dir,nx,ny,inBounds
 }
 
 func main() {
@@ -86,6 +121,7 @@ func main() {
 	out := flag.String("o", "battleai.json", "輸出的 fixture")
 	boards := flag.Int("boards", 24, "隨機盤面數")
 	seed := flag.Int64("seed", 1, "亂數種子（固定才能重現）")
+	acts := flag.Int("acts", 400, "單位層決策的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -183,12 +219,56 @@ func main() {
 		die(fmt.Errorf("正對照沒過（工具擺錯全域，不是 remake 的問題）：%w", err))
 	}
 
+	// ── 相鄰格 sub_63848 ─────────────────────────────────────────────
+	//
+	// 方向 → 座標的換算是奇偶欄錯半格，**寫錯了只有在某些格子上才看得出來**，
+	// 所以整個盤面 × 六個方向全部問一遍。
+	for y := 0; y < sangokushi.BattleRows; y++ {
+		for x := 0; x < sangokushi.TerrainCols; x++ {
+			for dir := 1; dir <= 6; dir++ {
+				nx, ny, ok, err := sangokushi.CallNeighbour(o, scratch+0x1800, x, y, dir)
+				die(err)
+				v := 0
+				if ok {
+					v = 1
+				}
+				f.Neighbour = append(f.Neighbour, [6]int{x, y, dir, nx, ny, v})
+			}
+		}
+	}
+
+	// ── 計略／火計成功率 sub_65930／sub_659DE ─────────────────────────
+	die(o.SetLong(sangokushi.Difficulty, 1))
+	for i := 0; i < 200; i++ {
+		c := rateCase{
+			AIntel: rng.Intn(101), AExp: rng.Intn(101),
+			DIntel: rng.Intn(101), DExp: rng.Intn(101),
+		}
+		die(sangokushi.General{Addr: genBase, Ruler: 3,
+			Intelligence: byte(c.AIntel), Exp: byte(c.AExp)}.Write(o))
+		die(sangokushi.General{Addr: genBase + 0x40, Ruler: 7,
+			Intelligence: byte(c.DIntel), Exp: byte(c.DExp)}.Write(o))
+		die(sangokushi.BattleUnit{Addr: unitBase, General: genBase, X: 1, Y: 1, Troops: 1000}.Write(o))
+		die(sangokushi.BattleUnit{Addr: unitBase + 0x40, General: genBase + 0x40, X: 2, Y: 1, Troops: 1000}.Write(o))
+		tv, err := o.Call(sangokushi.TrickRate, unitBase, unitBase+0x40)
+		die(err)
+		fv, err := o.Call(sangokushi.FireRate, unitBase, unitBase+0x40)
+		die(err)
+		c.Trick, c.Fire = int(int32(tv)), int(int32(fv))
+		f.Rates = append(f.Rates, c)
+	}
+
+	// ── 單位層決策 sub_670DA ──────────────────────────────────────────
+	f.UnitAct = unitActCases(o, rng, *acts)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
-	fmt.Printf("寫出 %s：六角距離 %d、方向碼 %d、補給 %d、突撃 %d、距離場 %d 個盤面\n",
+	fmt.Printf("寫出 %s：六角距離 %d、方向碼 %d、補給 %d、突撃 %d、"+
+		"距離場 %d 個盤面、單位層決策 %d\n",
 		*out, len(f.HexDistance), len(f.DirCode), len(f.Supply),
-		len(f.ChargeOdds), len(f.DistField))
+		len(f.ChargeOdds), len(f.DistField), len(f.UnitAct))
+	fmt.Printf("        相鄰格 %d、成功率 %d\n", len(f.Neighbour), len(f.Rates))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -351,4 +431,113 @@ func die(err error) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// unitActCases 問原版「這個局面下這個單位會做什麼」。
+//
+// `sub_670DA` 不回傳決定，它直接執行；所以五個執行者全部攔下來，
+// 攔到哪一支就是它決定了什麼（`sangokushi.CaptureAct`）。
+func unitActCases(o *oracle.Oracle, rng *rand.Rand, n int) []actCase {
+	var act sangokushi.Act
+	sangokushi.CaptureAct(o, &act)
+	// 亂數固定：`sub_670DA` 這一層不擲骰，固定住是為了「同一組輸入永遠同一個答案」。
+	sangokushi.ForceRand(o, func(uint32) uint32 { return 0 })
+
+	out := make([]actCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := actCase{
+			Terrain: make([]int, cells),
+			Fire:    make([]int, cells),
+			Wind:    rng.Intn(6),
+			OwnSup:  rng.Intn(100),
+			EnySup:  rng.Intn(100),
+			Flags:   rng.Intn(0x40),
+		}
+		// 一半的案例讓補給落在「突撃會被選中」的那一段（我方 ≤ 5 且低於敵方）。
+		if i%2 == 0 {
+			c.OwnSup, c.EnySup = rng.Intn(6), 6+rng.Intn(60)
+		}
+		for j := range c.Terrain {
+			c.Terrain[j] = rng.Intn(5) // 0..4，都不是山：山上站不了單位
+		}
+		for j := 0; j < 6; j++ {
+			c.Fire[rng.Intn(cells)] = rng.Intn(4)
+		}
+		c.U = randUnit(rng)
+		c.T = randUnit(rng)
+		// 一半的案例讓兩個單位相鄰——不相鄰的話多數分支都走不到。
+		if i%2 == 0 {
+			c.T.X, c.T.Y = neighbour(rng, c.U.X, c.U.Y)
+		}
+		if c.T.X == c.U.X && c.T.Y == c.U.Y {
+			continue
+		}
+		act = sangokushi.Act{Kind: "none"}
+		runAct(o, &c)
+		c.Kind, c.Mode, c.DX, c.DY = act.Kind, act.Mode, act.X, act.Y
+		out = append(out, c)
+	}
+	return out
+}
+
+func randUnit(rng *rand.Rand) unitSpec {
+	return unitSpec{
+		X: rng.Intn(sangokushi.TerrainCols), Y: rng.Intn(sangokushi.BattleRows),
+		Troops:   rng.Intn(12000) + 100,
+		Mobility: rng.Intn(16),
+		Force:    rng.Intn(100) + 1,
+		Intel:    rng.Intn(100) + 1,
+	}
+}
+
+// neighbour 六角格的一個相鄰座標（出界就退回原點）。
+func neighbour(rng *rand.Rand, x, y int) (int, int) {
+	odd := x & 1
+	deltas := [6][2]int{{-1, -1 + odd}, {0, -1}, {1, -1 + odd}, {-1, odd}, {0, 1}, {1, odd}}
+	d := deltas[rng.Intn(6)]
+	nx, ny := x+d[0], y+d[1]
+	if nx < 0 || ny < 0 || nx >= sangokushi.TerrainCols || ny >= sangokushi.BattleRows {
+		return x, y
+	}
+	return nx, ny
+}
+
+// runAct 擺盤面、呼叫 `sub_670DA`。
+func runAct(o *oracle.Oracle, c *actCase) {
+	const ownRuler, enemyRuler = 3, 7
+	var b sangokushi.Board
+	b.Ruler = ownRuler
+	for i := 0; i < cells; i++ {
+		b.Terrain[i] = byte(c.Terrain[i] << 3)
+		b.Fire[i] = byte(c.Fire[i])
+	}
+	ui := c.U.Y*sangokushi.TerrainCols + c.U.X
+	ti := c.T.Y*sangokushi.TerrainCols + c.T.X
+	b.Occupy[ui] = unitBase
+	b.Occupy[ti] = unitBase + 0x40
+	die(b.Write(o))
+	die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
+	die(o.SetLong(sangokushi.OwnSupply, u32(c.OwnSup)))
+	die(o.SetLong(sangokushi.EnemySupply, u32(c.EnySup)))
+	die(o.SetLong(sangokushi.PolicyFlag, 0))
+	die(o.SetLong(sangokushi.ActingRuler, ownRuler))
+	// **難度要設 1**：補正 ＝ 難度 − 1，設 1 之後雙方的補正都是 0，
+	// 計略／火計成功率就只剩「能力差」那一項。不設的話記憶體裡是殘值，
+	// 兩邊的補正不同，算出來的成功率與 remake 對不上——而那看起來像
+	// 「remake 的判斷寫錯了」，其實是盤面沒擺乾淨。
+	die(o.SetLong(sangokushi.Difficulty, 1))
+
+	writeUnit(o, unitBase, genBase, ownRuler, c.U)
+	writeUnit(o, unitBase+0x40, genBase+0x40, enemyRuler, c.T)
+	if _, err := o.Call(sangokushi.UnitAct, unitBase, unitBase+0x40, u32(c.Flags)); err != nil {
+		die(err)
+	}
+}
+
+func writeUnit(o *oracle.Oracle, unit, gen uint32, ruler byte, s unitSpec) {
+	die(sangokushi.General{Addr: gen, Ruler: ruler,
+		Strength: byte(s.Force), Intelligence: byte(s.Intel)}.Write(o))
+	die(sangokushi.BattleUnit{Addr: unit, General: gen,
+		X: u32(s.X), Y: u32(s.Y), Troops: u32(s.Troops)}.Write(o))
+	die(sangokushi.SetMobility(o, unit, byte(s.Mobility)))
 }
