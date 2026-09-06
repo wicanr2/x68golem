@@ -82,8 +82,8 @@ type unitSpec struct {
 
 // actCase 是 `sub_670DA(U, T, flags)` 的一次決策。
 type actCase struct {
-	Terrain []int `json:"terrain"`
-	Fire    []int `json:"fire"`
+	Terrain string `json:"terrain"` // 168 個 0-9 字元，一格一個
+	Fire    string `json:"fire"`
 	Wind    int   `json:"wind"`
 	OwnSup  int   `json:"ownSupply"`
 	EnySup  int   `json:"enemySupply"`
@@ -127,8 +127,8 @@ type policyCase struct {
 // 兩支一起問：`sub_6542A` 在迴圈裡逐次呼叫 `sub_6533A`，分開驗的話
 // 「係數乘在每一次的可燃度上」和「乘在累積完的機率上」分不出來。
 type burnCase struct {
-	Terrain []int `json:"terrain"`
-	Fire    []int `json:"fire"`
+	Terrain string `json:"terrain"`
+	Fire    string `json:"fire"`
 	Wind    int   `json:"wind"`
 	X       int   `json:"x"`
 	Y       int   `json:"y"`
@@ -496,9 +496,8 @@ func unitActCases(o *oracle.Oracle, rng *rand.Rand, n int) []actCase {
 
 	out := make([]actCase, 0, n)
 	for i := 0; i < n; i++ {
+		terrain, fire := make([]byte, cells), make([]byte, cells)
 		c := actCase{
-			Terrain: make([]int, cells),
-			Fire:    make([]int, cells),
 			Wind:    rng.Intn(6),
 			OwnSup:  rng.Intn(100),
 			EnySup:  rng.Intn(100),
@@ -510,12 +509,14 @@ func unitActCases(o *oracle.Oracle, rng *rand.Rand, n int) []actCase {
 		if i%2 == 0 {
 			c.OwnSup, c.EnySup = rng.Intn(6), 6+rng.Intn(60)
 		}
-		for j := range c.Terrain {
-			c.Terrain[j] = rng.Intn(5) // 0..4，都不是山：山上站不了單位
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(5)) // 0..4，都不是山：山上站不了單位
+			fire[j] = '0'
 		}
 		for j := 0; j < 6; j++ {
-			c.Fire[rng.Intn(cells)] = rng.Intn(4)
+			fire[rng.Intn(cells)] = byte('0' + rng.Intn(4))
 		}
+		c.Terrain, c.Fire = string(terrain), string(fire)
 		c.U = randUnit(rng)
 		c.T = randUnit(rng)
 		// 一半的案例讓兩個單位相鄰——不相鄰的話多數分支都走不到。
@@ -562,8 +563,8 @@ func runAct(o *oracle.Oracle, c *actCase) {
 	var b sangokushi.Board
 	b.Ruler = ownRuler
 	for i := 0; i < cells; i++ {
-		b.Terrain[i] = byte(c.Terrain[i] << 3)
-		b.Fire[i] = byte(c.Fire[i])
+		b.Terrain[i] = (c.Terrain[i] - '0') << 3
+		b.Fire[i] = c.Fire[i] - '0'
 	}
 	ui := c.U.Y*sangokushi.TerrainCols + c.U.X
 	ti := c.T.Y*sangokushi.TerrainCols + c.T.X
@@ -692,9 +693,8 @@ func burnCases(o *oracle.Oracle, rng *rand.Rand, n int) []burnCase {
 	const ruler = 3
 	out := make([]burnCase, 0, n)
 	for i := 0; i < n; i++ {
+		terrain, fire := make([]byte, cells), make([]byte, cells)
 		c := burnCase{
-			Terrain: make([]int, cells),
-			Fire:    make([]int, cells),
 			Wind:    rng.Intn(6),
 			X:       rng.Intn(sangokushi.TerrainCols),
 			Y:       rng.Intn(sangokushi.BattleRows),
@@ -704,26 +704,27 @@ func burnCases(o *oracle.Oracle, rng *rand.Rand, n int) []burnCase {
 			Exp:     rng.Intn(101),
 			Human:   rng.Intn(2) == 0,
 		}
-		for j := range c.Terrain {
-			c.Terrain[j] = rng.Intn(8) // 0..7：可燃度表就是 8 項，全部走一遍
+		for j := range terrain {
+			terrain[j] = byte('0' + rng.Intn(8)) // 0..7：可燃度表就是 8 項，全部走一遍
 		}
 		// 起火機率只看順風三個鄰格的計數**是不是恰好 3**（新火），撒得太稀
 		// 的話 400 例裡有 370 例是 0，等於沒驗到累加那一段。這裡讓 3 佔多數，
 		// 另外留 1／2 進去，累加條件寫成 `!= 0` 的話會被抓出來。
-		fireMix := [7]byte{0, 0, 0, 3, 3, 1, 2}
-		for j := range c.Fire {
-			c.Fire[j] = int(fireMix[rng.Intn(len(fireMix))])
+		fireMix := "0003312"
+		for j := range fire {
+			fire[j] = fireMix[rng.Intn(len(fireMix))]
 		}
 		// 目標格自己有一半機率是沒火的——有火的話兩支都直接回 0，驗不到後面。
 		if rng.Intn(2) == 0 {
-			c.Fire[c.Y*sangokushi.TerrainCols+c.X] = 0
+			fire[c.Y*sangokushi.TerrainCols+c.X] = '0'
 		}
+		c.Terrain, c.Fire = string(terrain), string(fire)
 
 		var b sangokushi.Board
 		b.Ruler = ruler
 		for j := 0; j < cells; j++ {
-			b.Terrain[j] = byte(c.Terrain[j] << 3)
-			b.Fire[j] = byte(c.Fire[j])
+			b.Terrain[j] = (c.Terrain[j] - '0') << 3
+			b.Fire[j] = c.Fire[j] - '0'
 		}
 		if c.HasUnit {
 			b.Occupy[c.Y*sangokushi.TerrainCols+c.X] = unitBase
