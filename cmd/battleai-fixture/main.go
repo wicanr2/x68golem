@@ -76,6 +76,7 @@ type unitSpec struct {
 	Mobility int
 	Force    int
 	Intel    int
+	Exp      int
 	Split    bool // 已散開（+0x12 非 0）
 }
 
@@ -87,6 +88,8 @@ type actCase struct {
 	OwnSup  int   `json:"ownSupply"`
 	EnySup  int   `json:"enemySupply"`
 	Flags   int   `json:"flags"`
+	UHuman  bool  `json:"uHuman"` // U 的君主是人類玩家（sub_6153A）
+	THuman  bool  `json:"tHuman"`
 	U       unitSpec
 	T       unitSpec
 	Kind    string `json:"kind"`
@@ -99,6 +102,43 @@ type actCase struct {
 type rateCase struct {
 	AIntel, AExp, DIntel, DExp int
 	Trick, Fire                int
+}
+
+// policyCase 是方針層 `sub_68382` 的一次判定。
+type policyCase struct {
+	Acting     string `json:"acting"` // "defender" 或 "attacker"
+	Day        int    `json:"day"`
+	Groups     int    `json:"groups"` // 0x7712C 城格分組數
+	OwnSup     int    `json:"ownSupply"`
+	EnySup     int    `json:"enemySupply"`
+	OwnDeploy  int    `json:"ownDeploy"`
+	EnyDeploy  int    `json:"enemyDeploy"`
+	OwnGens    int    `json:"ownGens"`
+	EnyGens    int    `json:"enemyGens"`
+	OwnTroops  int    `json:"ownTroops"`
+	EnyTroops  int    `json:"enemyTroops"`
+	HasRetreat bool   `json:"hasRetreat"`
+	Kind       string `json:"kind"`
+	N          int    `json:"n"`
+}
+
+// burnCase 是可燃度 `sub_6533A` 與起火機率 `sub_6542A` 的一次查詢。
+//
+// 兩支一起問：`sub_6542A` 在迴圈裡逐次呼叫 `sub_6533A`，分開驗的話
+// 「係數乘在每一次的可燃度上」和「乘在累積完的機率上」分不出來。
+type burnCase struct {
+	Terrain []int `json:"terrain"`
+	Fire    []int `json:"fire"`
+	Wind    int   `json:"wind"`
+	X       int   `json:"x"`
+	Y       int   `json:"y"`
+	CPU     int   `json:"cpu"`      // 電腦の強さ（dword_7A144）
+	HasUnit bool  `json:"hasUnit"`  // (x, y) 上有沒有單位
+	Intel   int   `json:"intel"`    // 該單位武將的知力
+	Exp     int   `json:"exp"`      // 経験
+	Human   bool  `json:"human"`    // 該武將的君主是人類玩家（sub_6153A）
+	Burn    int   `json:"burn"`     // sub_6533A(x, y)
+	Spread  int   `json:"spread"`   // sub_6542A(x, y)
 }
 
 type fixture struct {
@@ -114,6 +154,8 @@ type fixture struct {
 	UnitAct     []actCase     `json:"unitAct"`
 	Rates       []rateCase    `json:"rates"`
 	Neighbour   [][6]int      `json:"neighbour"` // x,y,dir,nx,ny,inBounds
+	Policy      []policyCase  `json:"policy"`
+	Burn        []burnCase    `json:"burn"`
 }
 
 func main() {
@@ -122,6 +164,8 @@ func main() {
 	boards := flag.Int("boards", 24, "隨機盤面數")
 	seed := flag.Int64("seed", 1, "亂數種子（固定才能重現）")
 	acts := flag.Int("acts", 400, "單位層決策的案例數")
+	policies := flag.Int("policies", 400, "方針層的案例數")
+	burns := flag.Int("burns", 400, "可燃度／起火機率的案例數")
 	flag.Parse()
 	if *z == "" {
 		flag.Usage()
@@ -261,6 +305,12 @@ func main() {
 	// ── 單位層決策 sub_670DA ──────────────────────────────────────────
 	f.UnitAct = unitActCases(o, rng, *acts)
 
+	// ── 方針層 sub_68382 ──────────────────────────────────────────────
+	f.Policy = policyCases(o, rng, *policies)
+
+	// ── 可燃度 sub_6533A ＋ 起火機率 sub_6542A ────────────────────────
+	f.Burn = burnCases(o, rng, *burns)
+
 	b, err := json.MarshalIndent(f, "", " ")
 	die(err)
 	die(os.WriteFile(*out, append(b, '\n'), 0o644))
@@ -268,7 +318,8 @@ func main() {
 		"距離場 %d 個盤面、單位層決策 %d\n",
 		*out, len(f.HexDistance), len(f.DirCode), len(f.Supply),
 		len(f.ChargeOdds), len(f.DistField), len(f.UnitAct))
-	fmt.Printf("        相鄰格 %d、成功率 %d\n", len(f.Neighbour), len(f.Rates))
+	fmt.Printf("        相鄰格 %d、成功率 %d、方針 %d、可燃度 %d\n",
+		len(f.Neighbour), len(f.Rates), len(f.Policy), len(f.Burn))
 }
 
 // flatControl 全平地、無單位、無火的正對照盤面。
@@ -452,6 +503,8 @@ func unitActCases(o *oracle.Oracle, rng *rand.Rand, n int) []actCase {
 			OwnSup:  rng.Intn(100),
 			EnySup:  rng.Intn(100),
 			Flags:   rng.Intn(0x40),
+			UHuman:  rng.Intn(2) == 0,
+			THuman:  rng.Intn(2) == 0,
 		}
 		// 一半的案例讓補給落在「突撃會被選中」的那一段（我方 ≤ 5 且低於敵方）。
 		if i%2 == 0 {
@@ -487,6 +540,7 @@ func randUnit(rng *rand.Rand) unitSpec {
 		Mobility: rng.Intn(16),
 		Force:    rng.Intn(100) + 1,
 		Intel:    rng.Intn(100) + 1,
+		Exp:      rng.Intn(101),
 	}
 }
 
@@ -526,6 +580,9 @@ func runAct(o *oracle.Oracle, c *actCase) {
 	// 兩邊的補正不同，算出來的成功率與 remake 對不上——而那看起來像
 	// 「remake 的判斷寫錯了」，其實是盤面沒擺乾淨。
 	die(o.SetLong(sangokushi.Difficulty, 1))
+	// 君主表的「人類玩家」bit0：`sub_6533A` 的難度補正正負號看它。
+	die(sangokushi.SetRulerHuman(o, ownRuler, c.UHuman))
+	die(sangokushi.SetRulerHuman(o, enemyRuler, c.THuman))
 
 	writeUnit(o, unitBase, genBase, ownRuler, c.U)
 	writeUnit(o, unitBase+0x40, genBase+0x40, enemyRuler, c.T)
@@ -536,8 +593,156 @@ func runAct(o *oracle.Oracle, c *actCase) {
 
 func writeUnit(o *oracle.Oracle, unit, gen uint32, ruler byte, s unitSpec) {
 	die(sangokushi.General{Addr: gen, Ruler: ruler,
-		Strength: byte(s.Force), Intelligence: byte(s.Intel)}.Write(o))
+		Strength: byte(s.Force), Intelligence: byte(s.Intel), Exp: byte(s.Exp)}.Write(o))
 	die(sangokushi.BattleUnit{Addr: unit, General: gen,
 		X: u32(s.X), Y: u32(s.Y), Troops: u32(s.Troops)}.Write(o))
 	die(sangokushi.SetMobility(o, unit, byte(s.Mobility)))
+}
+
+// policyCases 問原版「這個局面下這一方會用哪個方針」。
+//
+// `sub_68382` 不吃參數，四個量與五種方針全部由全域決定；「讀世界」的五支
+// 攔掉由這裡給值（`sangokushi.CapturePolicy`）。
+func policyCases(o *oracle.Oracle, rng *rand.Rand, n int) []policyCase {
+	const defRuler, atkRuler = 3, 7
+	var w sangokushi.World
+	var pick sangokushi.PolicyPick
+	sangokushi.CapturePolicy(o, &w, &pick)
+
+	// 國記錄與對方槽陣列：擺一塊全 0 的就好——金米走 SupplyScore（已攔），
+	// 對方槽全 0 表示「找不到君主本人／総大将」，斬首那一條因此不會觸發。
+	// **這一批不涵蓋斬首**，它要的是一整份場上狀態。
+	for i := uint32(0); i < 0x100; i += 4 {
+		die(o.SetLong(scratch+0x2000+i, 0))
+		die(o.SetLong(scratch+0x2200+i, 0))
+	}
+	die(o.SetLong(sangokushi.NationPtr, scratch+0x2000))
+	die(o.SetLong(sangokushi.OppSlots, scratch+0x2200))
+	die(o.SetLong(sangokushi.HQX, 6))
+	die(o.SetLong(sangokushi.HQY, 5))
+	// 盤面：全平地、沒有單位。主力那一條會看本陣格上站著誰。
+	var b sangokushi.Board
+	b.Ruler = defRuler
+	die(b.Write(o))
+
+	out := make([]policyCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := policyCase{
+			Day: rng.Intn(28) + 1, Groups: rng.Intn(4) + 1,
+			OwnSup: rng.Intn(40), EnySup: rng.Intn(40),
+			OwnGens: rng.Intn(6) + 1, EnyGens: rng.Intn(6) + 1,
+			OwnTroops: rng.Intn(40000) + 100, EnyTroops: rng.Intn(40000) + 100,
+			HasRetreat: rng.Intn(2) == 0,
+		}
+		// 可上場人數不會超過該君主在戰場所在國的武將數。
+		c.OwnDeploy = rng.Intn(c.OwnGens + 1)
+		c.EnyDeploy = rng.Intn(c.EnyGens + 1)
+		acting, opp := byte(defRuler), byte(atkRuler)
+		c.Acting = "defender"
+		if i%2 == 1 {
+			acting, opp = byte(atkRuler), byte(defRuler)
+			c.Acting = "attacker"
+		}
+		w = sangokushi.World{
+			Supply:      map[byte]uint32{defRuler: 0, atkRuler: 0},
+			Deployable:  map[byte]uint32{},
+			NationGens:  map[byte]uint32{},
+			TotalTroops: map[byte]uint32{},
+		}
+		// 補給：`sub_68302` 的第三個參數，守方那次傳 0x7761A、攻方那次傳 0x77616。
+		w.Supply[byte(defRuler)] = u32(c.OwnSup)
+		w.Supply[byte(atkRuler)] = u32(c.EnySup)
+		if c.Acting == "attacker" { // 交換之後行動方是攻方
+			w.Supply[byte(defRuler)] = u32(c.EnySup)
+			w.Supply[byte(atkRuler)] = u32(c.OwnSup)
+		}
+		w.Deployable[acting] = u32(c.OwnDeploy)
+		w.Deployable[opp] = u32(c.EnyDeploy)
+		w.NationGens[acting] = u32(c.OwnGens)
+		w.NationGens[opp] = u32(c.EnyGens)
+		w.TotalTroops[acting] = u32(c.OwnTroops)
+		w.TotalTroops[opp] = u32(c.EnyTroops)
+		if c.HasRetreat {
+			w.Retreat = scratch + 0x2000
+		} else {
+			w.Retreat = 0
+		}
+
+		die(o.SetLong(sangokushi.DefRuler, defRuler))
+		die(o.SetLong(sangokushi.AtkRuler, atkRuler))
+		die(o.SetLong(sangokushi.ActingRuler, uint32(acting)))
+		die(o.SetLong(sangokushi.OppRuler, uint32(opp)))
+		die(o.SetLong(sangokushi.BattleDay, u32(c.Day)))
+		die(o.SetLong(sangokushi.CastleGroups, u32(c.Groups)))
+
+		pick = sangokushi.PolicyPick{Kind: "none"}
+		if _, err := o.Call(sangokushi.PolicyTurn); err != nil {
+			die(err)
+		}
+		c.Kind, c.N = pick.Kind, pick.N
+		out = append(out, c)
+	}
+	return out
+}
+
+// burnCases 問原版「這一格多好燒、這一回合起火機率多少」。
+//
+// 兩支都是純函式：吃全域盤面，回一個數字，不動任何東西。
+func burnCases(o *oracle.Oracle, rng *rand.Rand, n int) []burnCase {
+	const ruler = 3
+	out := make([]burnCase, 0, n)
+	for i := 0; i < n; i++ {
+		c := burnCase{
+			Terrain: make([]int, cells),
+			Fire:    make([]int, cells),
+			Wind:    rng.Intn(6),
+			X:       rng.Intn(sangokushi.TerrainCols),
+			Y:       rng.Intn(sangokushi.BattleRows),
+			CPU:     rng.Intn(10) + 1,
+			HasUnit: rng.Intn(4) != 0,
+			Intel:   rng.Intn(101),
+			Exp:     rng.Intn(101),
+			Human:   rng.Intn(2) == 0,
+		}
+		for j := range c.Terrain {
+			c.Terrain[j] = rng.Intn(8) // 0..7：可燃度表就是 8 項，全部走一遍
+		}
+		// 起火機率只看順風三個鄰格的計數**是不是恰好 3**（新火），撒得太稀
+		// 的話 400 例裡有 370 例是 0，等於沒驗到累加那一段。這裡讓 3 佔多數，
+		// 另外留 1／2 進去，累加條件寫成 `!= 0` 的話會被抓出來。
+		fireMix := [7]byte{0, 0, 0, 3, 3, 1, 2}
+		for j := range c.Fire {
+			c.Fire[j] = int(fireMix[rng.Intn(len(fireMix))])
+		}
+		// 目標格自己有一半機率是沒火的——有火的話兩支都直接回 0，驗不到後面。
+		if rng.Intn(2) == 0 {
+			c.Fire[c.Y*sangokushi.TerrainCols+c.X] = 0
+		}
+
+		var b sangokushi.Board
+		b.Ruler = ruler
+		for j := 0; j < cells; j++ {
+			b.Terrain[j] = byte(c.Terrain[j] << 3)
+			b.Fire[j] = byte(c.Fire[j])
+		}
+		if c.HasUnit {
+			b.Occupy[c.Y*sangokushi.TerrainCols+c.X] = unitBase
+		}
+		die(b.Write(o))
+		die(o.SetLong(sangokushi.Wind, u32(c.Wind)))
+		die(o.SetLong(sangokushi.Difficulty, u32(c.CPU)))
+		die(sangokushi.SetRulerHuman(o, ruler, c.Human))
+		die(sangokushi.General{Addr: genBase, Ruler: ruler,
+			Intelligence: byte(c.Intel), Exp: byte(c.Exp)}.Write(o))
+		die(sangokushi.BattleUnit{Addr: unitBase, General: genBase,
+			X: u32(c.X), Y: u32(c.Y), Troops: 1000}.Write(o))
+
+		bv, err := o.Call(sangokushi.Burnability, u32(c.X), u32(c.Y))
+		die(err)
+		sv, err := o.Call(sangokushi.SpreadChance, u32(c.X), u32(c.Y))
+		die(err)
+		c.Burn, c.Spread = int(int32(bv)), int(int32(sv))
+		out = append(out, c)
+	}
+	return out
 }

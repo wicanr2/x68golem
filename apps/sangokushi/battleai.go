@@ -260,3 +260,132 @@ func CallNeighbour(o *oracle.Oracle, scratch uint32, x, y, dir int) (int, int, b
 	}
 	return int(int32(nx)), int(int32(ny)), r != 0, nil
 }
+
+// ── 方針層 `sub_68382`（AI-9）───────────────────────────────────────────
+//
+// `sub_68382` **不吃參數**，四個量與五種方針全部由全域決定。所以對拍的做法是
+// 把「讀世界」的五支攔掉（由呼叫端給值）、把五個方針分支攔掉（記錄哪一支被叫），
+// 剩下的就是純判定。
+const (
+	// PolicyTurn 是 `sub_68382()`。
+	PolicyTurn = 0x68382
+
+	// 五個方針分支。
+	PolAttrition = 0x67F7C // 持久（消耗）
+	PolCollapse  = 0x68018 // 總崩潰／全軍退却
+	PolForage    = 0x682B0 // sub_682B0(n)：守方奪糧／主力（守）
+	PolDecapit   = 0x68278 // 斬首
+	PolMainAtk   = 0x682CC // 主力（攻）
+
+	// 火計相關。
+	Burnability  = 0x6533A // sub_6533A(x, y)：一格的可燃度
+	SpreadChance = 0x6542A // sub_6542A(x, y)：一格本回合的起火機率
+
+	// 讀世界的三支（`SupplyScore`／`TotalTroops` 在上面）。
+	Deployable = 0x63196 // sub_63196(ruler)：可上場人數
+	NationGens = 0x631EC // sub_631EC(ruler)：該君主在戰場所在國的武將數
+	RetreatTo  = 0x622CC // sub_622CC(N, ruler)：退卻目的地（0 ＝ 沒有）
+
+	// 方針層讀到的全域。
+	DefRuler     = 0x7761A // 守方君主
+	AtkRuler     = 0x77616 // 攻方君主
+	OppRuler     = 0x77C42 // 對方君主
+	BattleDay    = 0x77612 // 第幾日
+	CastleGroups = 0x7712C // 守住全部城格所需的最少單位數
+	NationPtr    = 0x7B59E // 戰場所在國的國記錄指標
+	OppSlots     = 0x77C4A // 對方的槽陣列
+	HQX          = 0x77C36 // 攻方本陣格 x
+	HQY          = 0x77C3A // 攻方本陣格 y
+
+	// 君主表：`sub_6153A(r)` 讀 `word_7B5A2 + (r-1)*0x8E + 1` 的 bit0
+	// ＝「這個君主是人類玩家」。`sub_6533A`（可燃度）用它決定難度補正的正負號。
+	RulerTable  = 0x7B5A2
+	RulerStride = 0x8E
+	RulerFlags  = 1
+)
+
+// SetRulerHuman 設定君主表的「人類玩家」旗標（`sub_6153A` 讀的那個 bit0）。
+//
+// 不設的話讀到的是 `.Z` 映像裡的殘值——它是固定的，所以對拍不會抖，
+// 但 remake 這邊無從得知，火計那條分支就會系統性地對不上。
+func SetRulerHuman(o *oracle.Oracle, ruler byte, human bool) error {
+	addr := uint32(RulerTable) + uint32(ruler-1)*RulerStride + RulerFlags
+	v, err := o.Byte(addr)
+	if err != nil {
+		return err
+	}
+	if human {
+		v |= 1
+	} else {
+		v &^= 1
+	}
+	return o.SetByte(addr, v)
+}
+
+// PolicyPick 是 `sub_68382` 這一次選了哪一個方針。
+type PolicyPick struct {
+	Kind string // "attrition"／"collapse"／"forage"／"decapit"／"main-atk"／"none"
+	N    int    // forage：`sub_682B0(n)` 的 n
+}
+
+// World 是「讀世界」那幾支要回的值，依君主編號分。
+type World struct {
+	Supply      map[byte]uint32 // sub_68302(金, 米, ruler)
+	Deployable  map[byte]uint32 // sub_63196(ruler)
+	NationGens  map[byte]uint32 // sub_631EC(ruler)
+	TotalTroops map[byte]uint32 // sub_6342A(ruler)
+	Retreat     uint32          // sub_622CC(N, ruler)
+}
+
+// CapturePolicy 攔掉讀世界的五支與五個方針分支。
+//
+// **攔掉讀世界那幾支是必要的**：它們會走 255 筆武將主表與十個槽，
+// 要在合成盤面上讓它們算出指定的值，得先擺出一整份遊戲狀態——
+// 那是另一個量級的工作，而且擺錯了不會有錯誤訊息。
+// 用了它就要記得：被攔掉的那幾支不在結論的涵蓋範圍內。
+func CapturePolicy(o *oracle.Oracle, w *World, out *PolicyPick) {
+	argByte := func(f *x68k.Frame, n int) byte {
+		v, err := xc.Long(f, n)
+		if err != nil {
+			return 0
+		}
+		return byte(v)
+	}
+	pick := func(m map[byte]uint32, k byte) uint32 {
+		if m == nil {
+			return 0
+		}
+		return m[k]
+	}
+	o.Intercept(SupplyScore, func(f *x68k.Frame) (uint32, bool) {
+		return pick(w.Supply, argByte(f, 2)), true
+	})
+	o.Intercept(Deployable, func(f *x68k.Frame) (uint32, bool) {
+		return pick(w.Deployable, argByte(f, 0)), true
+	})
+	o.Intercept(NationGens, func(f *x68k.Frame) (uint32, bool) {
+		return pick(w.NationGens, argByte(f, 0)), true
+	})
+	o.Intercept(TotalTroops, func(f *x68k.Frame) (uint32, bool) {
+		return pick(w.TotalTroops, argByte(f, 0)), true
+	})
+	o.Intercept(RetreatTo, func(*x68k.Frame) (uint32, bool) { return w.Retreat, true })
+
+	branch := func(addr uint32, kind string, withN bool) {
+		o.Intercept(addr, func(f *x68k.Frame) (uint32, bool) {
+			p := PolicyPick{Kind: kind}
+			if withN {
+				if v, err := xc.Long(f, 0); err == nil {
+					p.N = int(int32(v))
+				}
+			}
+			*out = p
+			return 0, true
+		})
+	}
+	branch(PolAttrition, "attrition", false)
+	branch(PolCollapse, "collapse", false)
+	branch(PolForage, "forage", true)
+	branch(PolDecapit, "decapit", false)
+	branch(PolMainAtk, "main-atk", false)
+}
